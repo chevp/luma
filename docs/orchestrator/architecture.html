@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture · chi AI Orchestrator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">χ</span>
+      <span class="name">chi <span class="sub">orchestrator</span></span>
+    </div>
+    <nav class="nav">
+      <div class="nav-label">Guide</div>
+      <a href="index.html">Overview</a>
+      <a href="consult.html">chi consult</a>
+      <a href="plan.html">chi plan</a>
+      <a href="architecture.html" class="active">Architecture</a>
+      <div class="nav-label">Reference</div>
+      <a href="../../context/plans/CTX-002-ai-orchestration-providers.md">CTX-002 (plan)</a>
+      <a href="../../context/adr/ADR-007-claude-agent-sdk-exception.md">ADR-007 (SDK)</a>
+      <a href="../../context/adr/ADR-008-xstate-narrow-exception.md">ADR-008 (XState)</a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="page-header">
+      <div class="crumbs">design · architecture</div>
+      <h1>Architecture</h1>
+    </div>
+
+    <p>
+      This page is the canonical reference for how the orchestrator is wired,
+      what each module owns, and how a single <code>chi consult</code> turn flows
+      through the system. The authoritative spec is
+      <a href="../../context/plans/CTX-002-ai-orchestration-providers.md">CTX-002</a>;
+      this document is its visual companion.
+    </p>
+
+    <h2>Layering</h2>
+
+    <pre class="diagram">
+src/
+  provider/                 ← unchanged: cura, ollama (one-shot generate())
+    types.ts
+    cura.ts
+    ollama.ts
+
+  orchestrator/             ← claude-agent only (ADR-007 + ADR-008 carve-outs)
+    types.ts                ← public Snapshot / Orchestrator interface
+    state-machine.ts        ← single XState v5 machine (authoritative)
+    sdk-actor.ts            ← fromCallback: SDK iterator → machine events
+    claude-agent.ts         ← facade: assembles options, exposes Snapshot stream
+    ask-user.ts             ← readline AskUserHandler
+    tools/
+      chi-ask-user.ts       ← mcp__chi__ask_user
+      chi-plan.ts           ← mcp__chi__plan_create + mcp__chi__plan_list
+    index.ts                ← getOrchestrator() picker
+
+  workspace.ts              ← resolveWorkspaceRoot() / resolveRepoRoot()
+  commands/
+    consult.ts              ← subscribes to Snapshot, drives I/O
+    plan.ts                 ← repo-local plan scaffolding
+    init.ts                 ← + --provider=claude branch
+    doctor.ts               ← + claude target
+</pre>
+
+    <p>
+      <strong>Architectural rule</strong> (per
+      <a href="../../context/adr/ADR-008-xstate-narrow-exception.md">ADR-008</a>):
+      only files inside <code>src/orchestrator/</code> import <code>xstate</code> or
+      <code>@anthropic-ai/claude-agent-sdk</code>. Command files subscribe to the
+      typed <code>Snapshot</code> stream and never see the underlying machine or SDK types.
+      This makes the state-machine library swappable without rewriting commands.
+    </p>
+
+    <h2>State machine</h2>
+
+    <pre class="diagram">
+                       ┌─────────┐
+                       │  idle   │
+                       └────┬────┘
+                  START(prompt, options)
+                            ▼
+                   ┌────────────────┐
+                   │    running     │     ◄─── parent state
+                   │  (initial:     │           (sdkActor invoked here)
+                   │   receiving)   │
+                   └───┬────────────┘
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+ receivingText   executingTool        ─
+        │             │
+        │    ┌────────┼────────┐
+        │    ▼        ▼        ▼
+        │ builtIn  chiAsk  writeAttempt   ◄─── R3 violation marker
+        │  Tool    User     (final)
+        │    │        │
+        └────┴────────┘
+                    │
+        RESULT(stopReason)
+                    ▼
+              ┌───────────┐
+              │   done    │   ◄─── final
+              └───────────┘
+
+Cross-cutting (any non-final state):
+  ERROR(e)        → terminated.error
+  USER_CANCELLED  → terminated.userCancelled
+</pre>
+
+    <p>
+      The machine is defined once in
+      <code>src/orchestrator/state-machine.ts</code> using XState v5's
+      <code>setup({ types: ... }).createMachine(...)</code> API for
+      compile-time exhaustiveness. Adding a new state — for instance
+      <code>pausedForPermissionPrompt</code> when an interactive permission
+      callback ships — is a one-place edit.
+    </p>
+
+    <h3>Why <code>writeAttempt</code> is final</h3>
+    <p>
+      Under <code>permissionMode: "plan"</code>, the SDK should never let the
+      model emit a <code>tool_use</code> for <code>Edit</code>, <code>Write</code>,
+      or <code>NotebookEdit</code>. If it does anyway, that is risk R3 from CTX-002
+      firing. The machine routes such events to <code>executingTool.writeAttempt</code>,
+      a <em>final</em> substate — the parent <code>running</code> state therefore
+      blocks further input, command code can detect the violation, and the run
+      terminates with a loud error instead of silently mutating files.
+    </p>
+
+    <h2>Snapshot — the typed boundary</h2>
+
+    <p>
+      Commands subscribe to a stable <code>Snapshot</code> view, not to xstate's
+      internal snapshot:
+    </p>
+
+    <pre><code>type SnapshotState =
+  | "idle"
+  | "running.receivingText"
+  | "running.executingTool.builtInTool"
+  | "running.executingTool.chiAskUser"
+  | "running.executingTool.writeAttempt"
+  | "done"
+  | "terminated.error"
+  | "terminated.userCancelled";
+
+interface Snapshot {
+  state: SnapshotState;
+  lastAssistantText?: string;
+  pendingToolName?: string;
+  pendingQuestion?: string;
+  tokens?: { input: number; output: number };
+  error?: { message: string; cause?: unknown };
+}</code></pre>
+
+    <p>
+      Two consequences:
+    </p>
+    <ul>
+      <li>Renderers can drive a CLI, a TUI, or the web console off the same data.</li>
+      <li>Swapping XState for an in-tree FSM (ADR-008 Alternative A) needs no command-side change.</li>
+    </ul>
+
+    <h2>Lifecycle of a single turn</h2>
+
+    <ol>
+      <li>User runs <code>chi consult "..."</code>.</li>
+      <li><code>commands/consult.ts</code> parses argv, picks <code>permissionMode</code> + <code>allowedTools</code>, and resolves <code>cwd</code> via <code>workspace.resolveWorkspaceRoot()</code>.</li>
+      <li>It calls <code>getOrchestrator("claude-agent").start(opts, prompt)</code>.</li>
+      <li>The facade verifies <code>ANTHROPIC_API_KEY</code> (throws <code>MissingAnthropicKeyError</code> on miss), assembles the chi MCP server, and starts an <code>actor = createActor(orchestratorMachine)</code>.</li>
+      <li>The machine enters <code>running</code> and invokes <code>sdkActor</code>, which begins iterating the SDK's async stream.</li>
+      <li>Each SDK message becomes one event:
+        <ul>
+          <li><code>assistant</code> with text → <code>TEXT</code> → <code>running.receivingText</code> updates <code>lastText</code>.</li>
+          <li><code>assistant</code> with tool_use → <code>TOOL_USE</code> → guards route to <code>builtInTool</code> / <code>chiAskUser</code> / <code>writeAttempt</code>.</li>
+          <li><code>result</code> → <code>RESULT</code> → final <code>done</code>.</li>
+          <li>Thrown error → <code>ERROR</code> → <code>terminated.error</code>.</li>
+        </ul>
+      </li>
+      <li>Every state change fires a fresh <code>Snapshot</code> for subscribers; the consult command prints assistant text to stdout and tool transitions to stderr.</li>
+      <li><code>run.done</code> resolves with the final snapshot; the command maps that to an exit code (0/1/2).</li>
+    </ol>
+
+    <h2>The SDK actor</h2>
+
+    <p>
+      <code>sdk-actor.ts</code> is the only piece of glue between the SDK iterator
+      and the machine. It is intentionally tiny — H4 in CTX-002 ("≤ 40 LoC of glue")
+      lives or dies on this file staying small. The cleanup function it returns
+      flips a <code>cancelled</code> flag so the loop bails on its next yield when
+      the machine stops or a <code>USER_CANCELLED</code> arrives.
+    </p>
+
+    <h2>Why this architecture?</h2>
+
+    <table>
+      <thead><tr><th>Decision</th><th>Trade-off</th><th>ADR</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>High-level Claude Agent SDK over hand-rolled <code>@anthropic-ai/sdk</code></td>
+          <td>One new runtime dep vs. ~1500–2500 LoC of security-sensitive tool-loop code we'd own.</td>
+          <td><a href="../../context/adr/ADR-007-claude-agent-sdk-exception.md">ADR-007</a></td>
+        </tr>
+        <tr>
+          <td>XState v5 over imperative <code>for await { switch } if</code></td>
+          <td>Explicit, exhaustive state, devtools-ready, swappable. Costs one more dep.</td>
+          <td><a href="../../context/adr/ADR-008-xstate-narrow-exception.md">ADR-008</a></td>
+        </tr>
+        <tr>
+          <td>Orchestrator above Provider, not inside it</td>
+          <td><code>cura</code> / <code>ollama</code> stay one-shot generators. Orchestrator behavior never leaks into providers that can't support it.</td>
+          <td>CTX-002 H1</td>
+        </tr>
+        <tr>
+          <td>Live in <code>src/orchestrator/</code>, not a separate package</td>
+          <td>No premature API design. Extract when a second non-wrapper consumer materializes.</td>
+          <td>CTX-002 §Out of scope</td>
+        </tr>
+        <tr>
+          <td><code>permissionMode: "plan"</code> by default</td>
+          <td>Read-only by default; users opt in to <code>--write</code> and <code>--dangerously-allow-bash</code>.</td>
+          <td>CTX-002 §R3</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Kill criteria worth remembering</h2>
+    <p>If any of these fire, this whole design re-opens:</p>
+    <ul>
+      <li>The SDK refuses to mix a built-in tool with a custom in-process tool in the same <code>query()</code> call. → fall back to the low-level SDK + hand-rolled loop.</li>
+      <li><code>permissionMode: "plan"</code> performs writes anyway. → <code>chi consult</code>'s safety story is unimplementable, escalate.</li>
+      <li>XState v5 ships breaking changes more than once per quarter for two consecutive quarters. → migrate to ADR-008 Alternative A (in-tree FSM).</li>
+      <li>Combined <code>node_modules</code> footprint exceeds 60 MB. → "small CLI" identity is broken; revisit ADR-003 narrow exceptions.</li>
+    </ul>
+
+    <footer>
+      <p>Architecture · <a href="index.html">Overview</a> · <a href="consult.html">chi consult</a> · <a href="plan.html">chi plan</a></p>
+    </footer>
+  </main>
+</body>
+</html>

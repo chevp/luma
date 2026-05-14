@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>chi consult · AI Orchestrator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">χ</span>
+      <span class="name">chi <span class="sub">orchestrator</span></span>
+    </div>
+    <nav class="nav">
+      <div class="nav-label">Guide</div>
+      <a href="index.html">Overview</a>
+      <a href="consult.html" class="active">chi consult</a>
+      <a href="plan.html">chi plan</a>
+      <a href="architecture.html">Architecture</a>
+      <div class="nav-label">Reference</div>
+      <a href="../../context/plans/CTX-002-ai-orchestration-providers.md">CTX-002 (plan)</a>
+      <a href="../../context/adr/ADR-007-claude-agent-sdk-exception.md">ADR-007 (SDK)</a>
+      <a href="../../context/adr/ADR-008-xstate-narrow-exception.md">ADR-008 (XState)</a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="page-header">
+      <div class="crumbs">commands · consult</div>
+      <h1>chi consult</h1>
+    </div>
+
+    <p>
+      <code>chi consult</code> opens a multi-turn AI session backed by the
+      <code>claude-agent</code> orchestrator. The model receives your question
+      plus a tool surface (workspace reads, optional writes, optional bash) and
+      runs until it produces a final answer.
+    </p>
+
+    <h2>Synopsis</h2>
+    <pre><code>chi consult [&lt;question&gt;] [options]</code></pre>
+    <p>If <code>&lt;question&gt;</code> is omitted, you'll be prompted on stdin.</p>
+
+    <h2>Options</h2>
+    <table>
+      <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>--write</code></td><td>Switch <code>permissionMode</code> to <code>acceptEdits</code> and add <code>Edit</code>, <code>Write</code>, and <code>mcp__chi__plan_create</code> to the allowed-tools list.</td></tr>
+        <tr><td><code>--dangerously-allow-bash</code></td><td>Switch to <code>bypassPermissions</code> and add <code>Bash</code>. <strong>Refused</strong> unless <code>--write</code> is also passed.</td></tr>
+        <tr><td><code>--model &lt;id&gt;</code></td><td>Override <code>CHI_CLAUDE_MODEL</code> for this run. Default: <code>claude-opus-4-7</code>.</td></tr>
+        <tr><td><code>--cwd &lt;path&gt;</code></td><td>Override the workspace/repo resolver. Use this when consulting about a directory other than the one you're in.</td></tr>
+        <tr><td><code>-h</code>, <code>--help</code></td><td>Print help and exit 0.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Permission modes</h2>
+
+    <table>
+      <thead><tr><th>Mode</th><th>Tools</th><th>Use when</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="pill green">plan</span> (default)</td>
+          <td><code>Read</code>, <code>Glob</code>, <code>Grep</code>, <code>mcp__chi__ask_user</code>, <code>mcp__chi__plan_list</code></td>
+          <td>Asking questions, exploring, summarizing, drafting answers without touching the tree.</td>
+        </tr>
+        <tr>
+          <td><span class="pill">acceptEdits</span></td>
+          <td>+ <code>Edit</code>, <code>Write</code>, <code>mcp__chi__plan_create</code></td>
+          <td>Letting the model rewrite files in place — refactors, plan creation, doc edits.</td>
+        </tr>
+        <tr>
+          <td><span class="pill red">bypassPermissions</span></td>
+          <td>+ <code>Bash</code></td>
+          <td>You explicitly want the model to run shell commands. Pair with version-control discipline.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Workspace mode vs. repo mode</h2>
+    <p>
+      Before invoking the SDK, <code>chi consult</code> calls
+      <code>resolveWorkspaceRoot()</code> to choose <code>options.cwd</code>:
+    </p>
+    <ul>
+      <li><strong>Workspace mode</strong> wins when an ancestor of <code>cwd</code> contains a <code>CLAUDE.md</code> mentioning <em>"Workspace Mode"</em> or <em>"chevp-workflow"</em> <em>and</em> contains sub-directories that are themselves git repos. The orchestrator then runs from that ancestor — useful for cross-repo questions.</li>
+      <li><strong>Repo mode</strong> kicks in otherwise: the resolver walks up to the nearest <code>.git</code> and uses that as the cwd.</li>
+    </ul>
+    <p>The detected mode is printed to stderr at the start of every consult run (e.g. <code>(repo mode at /Users/me/proj, permission=plan)</code>).</p>
+
+    <h2>The chi.* tool surface</h2>
+    <p>
+      The orchestrator registers a small in-process MCP server named <code>chi</code>
+      with three tools the model can call directly. They appear in
+      <code>allowedTools</code> as <code>mcp__chi__&lt;tool&gt;</code>.
+    </p>
+    <table>
+      <thead><tr><th>Tool</th><th>Schema</th><th>Behavior</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>mcp__chi__ask_user</code></td>
+          <td><code>{ question: string, options?: string[] }</code></td>
+          <td>Calls the configured <code>AskUserHandler</code> (readline by default), reads the answer from the terminal, returns it as a <code>tool_result</code>.</td>
+        </tr>
+        <tr>
+          <td><code>mcp__chi__plan_list</code></td>
+          <td><code>{ type?: "CTX"|"EXP"|"PRD"|"PROP"|"ADR" }</code></td>
+          <td>Lists framework artifacts under <code>context/plans/</code> and <code>context/adr/</code>.</td>
+        </tr>
+        <tr>
+          <td><code>mcp__chi__plan_create</code> <span class="pill">--write</span></td>
+          <td><code>{ type, title }</code></td>
+          <td>Scaffolds a new framework artifact with conformant frontmatter and returns the new path. Only enabled with <code>--write</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Examples</h2>
+
+    <h3>Read-only summary</h3>
+    <pre><code>chi consult "what does this repo do? cite three relevant files."</code></pre>
+
+    <h3>Draft a new ADR</h3>
+    <pre><code>chi consult --write "draft an ADR for adopting pino as a logger.
+write it to context/adr/ via the chi.plan_create tool."</code></pre>
+
+    <h3>Run shell + write changes</h3>
+    <pre><code>chi consult --write --dangerously-allow-bash \
+  "find unused exports with ts-unused-exports and remove them"</code></pre>
+
+    <h3>Cross-repo consult from a workspace root</h3>
+    <pre><code>cd ~/workspace
+chi consult "compare error handling across all sub-repos under tools/"</code></pre>
+
+    <h2>Exit codes</h2>
+    <table>
+      <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td>The orchestrator reached the <code>done</code> state (model emitted a final answer).</td></tr>
+        <tr><td>1</td><td>Argv error, missing <code>ANTHROPIC_API_KEY</code>, refused flag combination, or the orchestrator transitioned to <code>terminated.error</code>.</td></tr>
+        <tr><td>2</td><td>The user cancelled the run (<code>USER_CANCELLED</code> event).</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Environment</h2>
+    <table>
+      <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>ANTHROPIC_API_KEY</code></td><td>Required. Read from env or <code>~/.chi/config</code> via the <code>anthropic_api_key</code> key.</td></tr>
+        <tr><td><code>CHI_CLAUDE_MODEL</code></td><td>Default model id. Overridden by <code>--model</code>.</td></tr>
+        <tr><td><code>CHI_CLAUDE_PERMISSION_MODE</code></td><td>Reserved for future use; today the CLI flags are authoritative.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <strong>How the model sees the workspace</strong>
+      The Agent SDK's built-in <code>Read</code>/<code>Glob</code>/<code>Grep</code> tools are
+      sandboxed to <code>options.cwd</code>. There is no way for the model to escape
+      that root — <code>--cwd</code> is the only knob.
+    </div>
+
+    <footer>
+      <p>chi consult · <a href="index.html">Overview</a> · <a href="architecture.html">Architecture</a></p>
+    </footer>
+  </main>
+</body>
+</html>

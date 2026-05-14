@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>chi plan · AI Orchestrator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">χ</span>
+      <span class="name">chi <span class="sub">orchestrator</span></span>
+    </div>
+    <nav class="nav">
+      <div class="nav-label">Guide</div>
+      <a href="index.html">Overview</a>
+      <a href="consult.html">chi consult</a>
+      <a href="plan.html" class="active">chi plan</a>
+      <a href="architecture.html">Architecture</a>
+      <div class="nav-label">Reference</div>
+      <a href="../../context/plans/CTX-002-ai-orchestration-providers.md">CTX-002 (plan)</a>
+      <a href="../../context/adr/ADR-007-claude-agent-sdk-exception.md">ADR-007 (SDK)</a>
+      <a href="../../context/adr/ADR-008-xstate-narrow-exception.md">ADR-008 (XState)</a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="page-header">
+      <div class="crumbs">commands · plan</div>
+      <h1>chi plan</h1>
+    </div>
+
+    <p>
+      <code>chi plan</code> scaffolds and lists framework artifacts —
+      <strong>CTX</strong>, <strong>EXP</strong>, <strong>PRD</strong>,
+      <strong>PROP</strong>, and <strong>ADR</strong> documents that the
+      chevp-ai-framework uses to govern non-trivial work
+      (G1 Context &rarr; G2 Exploration &rarr; G3 Production).
+    </p>
+
+    <p>The command is a thin local helper: it does <em>not</em> call the orchestrator and does <em>not</em> require <code>ANTHROPIC_API_KEY</code>.</p>
+
+    <h2>Layout</h2>
+    <table>
+      <thead><tr><th>Type</th><th>Folder</th><th>What it represents</th></tr></thead>
+      <tbody>
+        <tr><td><code>CTX</code></td><td><code>context/plans/</code></td><td>G1 — context plan / problem framing</td></tr>
+        <tr><td><code>EXP</code></td><td><code>context/plans/</code></td><td>G2 — exploration / prototype</td></tr>
+        <tr><td><code>PRD</code></td><td><code>context/plans/</code></td><td>G3 — production design / acceptance criteria</td></tr>
+        <tr><td><code>PROP</code></td><td><code>context/plans/</code></td><td>Lightweight proposal (deferred work)</td></tr>
+        <tr><td><code>ADR</code></td><td><code>context/adr/</code></td><td>Architecture decision record</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Subcommands</h2>
+
+    <h3>chi plan new</h3>
+    <pre><code>chi plan new &lt;CTX|EXP|PRD|PROP|ADR&gt; "&lt;title&gt;"</code></pre>
+    <p>Behavior:</p>
+    <ol>
+      <li>Resolves the nearest git repo via <code>resolveRepoRoot()</code>.</li>
+      <li>Picks the right folder (<code>context/plans/</code> or <code>context/adr/</code>) — creating it if needed.</li>
+      <li>Computes the next <code>NNN</code> by scanning existing files of the same type.</li>
+      <li>Slugifies the title and writes the file with framework-conformant frontmatter:</li>
+    </ol>
+    <pre><code>---
+id: CTX-003
+type: CTX
+status: proposed
+proposed-by: human
+proposed-at: 2026-05-11
+supersedes: —
+related: —
+---
+
+# CTX-003 — your title
+
+## Context
+
+(write context here)
+
+## Decision
+
+(write the decision here)
+
+## Consequences
+
+(write consequences here)
+</code></pre>
+
+    <h3>chi plan list</h3>
+    <pre><code>chi plan list [&lt;type&gt;]</code></pre>
+    <p>Lists every framework artifact under the resolved repo, prefixed with its
+    <code>status:</code> from frontmatter. Filter by type with the optional positional
+    argument:</p>
+    <pre><code>chi plan list ctx
+chi plan list adr</code></pre>
+
+    <h2>Examples</h2>
+    <h3>Start a new context plan</h3>
+    <pre><code>$ chi plan new CTX "evaluate alternative state-machine libs"
+✓ created /Users/me/proj/context/plans/CTX-003-evaluate-alternative-state-machine-libs.md</code></pre>
+
+    <h3>List only ADRs</h3>
+    <pre><code>$ chi plan list adr
+  accepted   /Users/me/proj/context/adr/ADR-001-language-and-runtime.md
+  accepted   /Users/me/proj/context/adr/ADR-007-claude-agent-sdk-exception.md
+  proposed   /Users/me/proj/context/adr/ADR-010-pino-logging.md</code></pre>
+
+    <h2>Programmatic equivalents</h2>
+    <p>
+      The orchestrator exposes the same operations as MCP tools that
+      <code>chi consult</code> can call directly:
+    </p>
+    <table>
+      <thead><tr><th>CLI</th><th>Tool</th></tr></thead>
+      <tbody>
+        <tr><td><code>chi plan new</code></td><td><code>mcp__chi__plan_create</code> (only enabled with <code>--write</code>)</td></tr>
+        <tr><td><code>chi plan list</code></td><td><code>mcp__chi__plan_list</code> (always enabled)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <strong>Why repo-scoped, not workspace-scoped?</strong>
+      Plans live alongside the code they govern. A consult run from
+      <code>~/workspace</code> resolves to <em>workspace mode</em> for cross-repo
+      questions, but a <code>plan list</code> from inside <code>tools/chi</code>
+      should never spill into other repos' artifacts. <code>resolveRepoRoot()</code>
+      enforces this — it stops at the nearest <code>.git</code>.
+    </div>
+
+    <h2>Exit codes</h2>
+    <table>
+      <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td>Created or listed successfully.</td></tr>
+        <tr><td>1</td><td>Missing/invalid arguments, unknown subcommand, or unknown type.</td></tr>
+      </tbody>
+    </table>
+
+    <footer>
+      <p>chi plan · <a href="index.html">Overview</a> · <a href="consult.html">chi consult</a></p>
+    </footer>
+  </main>
+</body>
+</html>

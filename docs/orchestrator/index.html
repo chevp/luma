@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>chi · AI Orchestrator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">χ</span>
+      <span class="name">chi <span class="sub">orchestrator</span></span>
+    </div>
+    <nav class="nav">
+      <div class="nav-label">Guide</div>
+      <a href="index.html" class="active">Overview</a>
+      <a href="consult.html">chi consult</a>
+      <a href="plan.html">chi plan</a>
+      <a href="architecture.html">Architecture</a>
+      <div class="nav-label">Reference</div>
+      <a href="../../context/plans/CTX-002-ai-orchestration-providers.md">CTX-002 (plan)</a>
+      <a href="../../context/adr/ADR-007-claude-agent-sdk-exception.md">ADR-007 (SDK)</a>
+      <a href="../../context/adr/ADR-008-xstate-narrow-exception.md">ADR-008 (XState)</a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="page-header">
+      <div class="crumbs">chi orchestrator · v1</div>
+      <h1>AI Orchestrator</h1>
+    </div>
+
+    <p>
+      The <strong>chi orchestrator</strong> is the layer that drives multi-turn,
+      tool-using AI conversations from the <code>chi</code> CLI. It wraps the
+      <a href="https://github.com/anthropics/claude-agent-sdk-typescript">Claude Agent SDK</a>
+      in an <a href="https://stately.ai/docs/xstate">XState v5</a> machine and
+      exposes a stable, typed <code>Snapshot</code> stream that command code subscribes to.
+    </p>
+
+    <p>
+      It does not replace the existing <code>cura</code> / <code>ollama</code> providers — those
+      keep serving the one-shot generators (<code>chi commit</code>, <code>chi explain</code>,
+      <code>chi issue</code>). The orchestrator runs in <em>parallel</em>, behind two new commands:
+    </p>
+
+    <table>
+      <thead><tr><th>Command</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>chi consult</code></td><td>Multi-turn AI session with workspace tools (Read/Glob/Grep + chi.* tools, optional Edit/Write/Bash).</td></tr>
+        <tr><td><code>chi plan</code></td><td>Scaffold &amp; list framework artifacts (CTX/EXP/PRD/PROP/ADR).</td></tr>
+        <tr><td><code>chi init --provider=claude</code></td><td>Persist <code>ANTHROPIC_API_KEY</code> to <code>~/.chi/config</code>.</td></tr>
+        <tr><td><code>chi doctor claude</code></td><td>Verify the orchestrator is loadable and the API key is set.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Getting started</h2>
+
+    <h3>1. Install</h3>
+    <p>From the repo root:</p>
+    <pre><code>npm install
+npm run build
+npm link        # makes `chi` available on PATH</code></pre>
+
+    <h3>2. Provide an Anthropic API key</h3>
+    <p>The interactive route writes to <code>~/.chi/config</code> (chmod 600):</p>
+    <pre><code>chi init --provider=claude</code></pre>
+    <p>Or set it directly in the environment:</p>
+    <pre><code>export ANTHROPIC_API_KEY=sk-ant-...</code></pre>
+
+    <div class="callout">
+      <strong>Why is this only required for orchestrator commands?</strong>
+      The key check happens at the <em>first</em> <code>query()</code> call inside
+      the orchestrator — not at boot. Commands like <code>chi status</code>,
+      <code>chi commit</code>, and <code>chi ship</code> keep working with only
+      <code>BASIC_AUTH_USER</code> / <code>BASIC_AUTH_PASSWORD</code> set
+      (CTX-002 Decision #8).
+    </div>
+
+    <h3>3. Verify</h3>
+    <pre><code>chi doctor claude</code></pre>
+    <p>Expected output:</p>
+    <pre><code>claude:
+  ✓ ANTHROPIC_API_KEY present
+  ✓ orchestrator loadable</code></pre>
+
+    <h3>4. Ask a question</h3>
+    <pre><code>chi consult "summarize what this repo does"</code></pre>
+    <p>
+      The default permission mode is <code>plan</code>: the model gets <code>Read</code>,
+      <code>Glob</code>, <code>Grep</code>, and the <code>chi.ask_user</code> tool —
+      no writes, no Bash. To grant writes pass <code>--write</code>; to grant Bash on top
+      of that pass <code>--dangerously-allow-bash</code> (refused without <code>--write</code>).
+    </p>
+
+    <h2>Defaults &amp; safety</h2>
+
+    <table>
+      <thead><tr><th>Concern</th><th>Default</th><th>Override</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Permission mode</td>
+          <td><code>plan</code> <span class="pill green">read-only</span></td>
+          <td><code>--write</code> &rarr; <code>acceptEdits</code><br><code>--dangerously-allow-bash</code> &rarr; <code>bypassPermissions</code></td>
+        </tr>
+        <tr>
+          <td>Allowed tools</td>
+          <td><code>Read</code>, <code>Glob</code>, <code>Grep</code>, <code>mcp__chi__ask_user</code>, <code>mcp__chi__plan_list</code></td>
+          <td><code>--write</code> adds <code>Edit</code>, <code>Write</code>, <code>mcp__chi__plan_create</code><br><code>--dangerously-allow-bash</code> adds <code>Bash</code></td>
+        </tr>
+        <tr>
+          <td>Working directory</td>
+          <td>Workspace root if detected, else nearest git repo, else <code>cwd</code></td>
+          <td><code>--cwd &lt;path&gt;</code></td>
+        </tr>
+        <tr>
+          <td>Model</td>
+          <td><code>claude-opus-4-7</code></td>
+          <td><code>--model &lt;id&gt;</code> or <code>CHI_CLAUDE_MODEL</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <strong>R3 — permission-mode footgun</strong>
+      <code>--dangerously-allow-bash</code> hands the model a shell. The CLI refuses it
+      unless you also pass <code>--write</code>, but past that it is your responsibility
+      to vet the prompt. Treat it the same as <code>--dangerously-skip-permissions</code>
+      in <code>claude</code> itself.
+    </div>
+
+    <h2>What lives where</h2>
+
+    <table>
+      <thead><tr><th>Path</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/orchestrator/types.ts</code></td><td>Public types: <code>Orchestrator</code>, <code>Snapshot</code>, <code>AskUserHandler</code>.</td></tr>
+        <tr><td><code>src/orchestrator/state-machine.ts</code></td><td>Authoritative XState v5 machine.</td></tr>
+        <tr><td><code>src/orchestrator/sdk-actor.ts</code></td><td><code>fromCallback</code> actor pumping the SDK iterator into events.</td></tr>
+        <tr><td><code>src/orchestrator/claude-agent.ts</code></td><td>Facade — assembles options, starts the actor, exposes the Snapshot stream.</td></tr>
+        <tr><td><code>src/orchestrator/tools/</code></td><td>In-process MCP tools: <code>ask_user</code>, <code>plan_create</code>, <code>plan_list</code>.</td></tr>
+        <tr><td><code>src/commands/consult.ts</code></td><td>The <code>chi consult</code> command.</td></tr>
+        <tr><td><code>src/commands/plan.ts</code></td><td>The <code>chi plan</code> command.</td></tr>
+      </tbody>
+    </table>
+
+    <p>Per <a href="../../context/adr/ADR-008-xstate-narrow-exception.md">ADR-008</a>,
+    only files inside <code>src/orchestrator/</code> import <code>xstate</code> or the
+    Claude Agent SDK. Command code subscribes to the typed <code>Snapshot</code> stream and
+    never sees machine internals.</p>
+
+    <footer>
+      <p>chi orchestrator · CTX-002 / ADR-007 / ADR-008 · <a href="architecture.html">Architecture</a></p>
+    </footer>
+  </main>
+</body>
+</html>

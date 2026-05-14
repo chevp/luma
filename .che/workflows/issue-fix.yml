@@ -1,0 +1,38 @@
+name: issue-fix
+description: Framework-driven Claude fix session in a parallel worktree (CTX → EXP → PRD)
+
+# Invoked by `chi issue fix <N> "<hint>"`. The subcommand performs pre-flight
+# validation (gh present, claude-code provider), creates a parallel worktree
+# at ../<repo>-issue-<N> on branch fix/issue-<N>, and writes the framework-
+# prompt to a tmp file before delegating here.
+#
+# This workflow is intentionally thin: write the chi-flow marker inside the
+# worktree, then launch Claude. The user runs `chi ship` / `chi done` from
+# inside the worktree themselves.
+#
+# Direct invocation:
+#   chi run issue-fix --num=42 --branch=fix/issue-42 \
+#     --prompt-file=/tmp/PROMPT.md --worktree-path=/path/to/repo-issue-42
+
+inputs:
+  - name: num
+    required: true
+    description: GitHub issue number being fixed
+  - name: branch
+    required: true
+    description: Branch already created by the worktree (e.g. fix/issue-42)
+  - name: prompt-file
+    required: true
+    description: Absolute path to the framework prompt assembled by the subcommand
+  - name: worktree-path
+    required: true
+    description: Absolute path to the worktree the script should cd into
+
+steps:
+  - name: launch claude in worktree
+    script: .che/scripts/issue-fix.sh
+    args:
+      - ${num}
+      - ${branch}
+      - ${prompt-file}
+      - ${worktree-path}

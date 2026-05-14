@@ -1,0 +1,1 @@
+{"version":3,"file":"stub.js","sourceRoot":"","sources":["../../src/commands/stub.ts"],"names":[],"mappings":"AAAA;;;;GAIG;AACH,MAAM,UAAU,WAAW,CAAC,IAAY;IACtC,OAAO,KAAK,EAAE,KAAe,EAAmB,EAAE;QAChD,OAAO,CAAC,MAAM,CAAC,KAAK,CAClB,OAAO,IAAI,iEAAiE,CAC7E,CAAC;QACF,OAAO,CAAC,CAAC;IACX,CAAC,CAAC;AACJ,CAAC"}
