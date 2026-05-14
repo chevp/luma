@@ -25,9 +25,9 @@ jobs:
       - name: Pack
         run: |
           npm pack
-          mv chi-*.tgz chi.tgz
+          mv luma-*.tgz luma.tgz
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: chi.tgz
+          files: luma.tgz
           generate_release_notes: true
