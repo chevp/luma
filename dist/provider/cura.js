@@ -23,6 +23,18 @@ async function fetchWithTimeout(url, init = {}) {
         clearTimeout(timer);
     }
 }
+/**
+ * Strip HTML markup and collapse whitespace so a 401 error page from a proxy
+ * (Google IAP, nginx, etc.) doesn't dump raw <html> into the terminal.
+ */
+function sanitizeBody(body, max = 120) {
+    const looksLikeHtml = /<\/?[a-z][^>]*>/i.test(body);
+    let cleaned = looksLikeHtml
+        ? body.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ")
+        : body;
+    cleaned = cleaned.replace(/\s+/g, " ").trim();
+    return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+}
 export const curaProvider = {
     name: "cura",
     activeModel() {
@@ -68,7 +80,11 @@ export const curaProvider = {
         });
         if (!r.ok) {
             const body = await r.text().catch(() => "");
-            throw new Error(`cura generate failed: HTTP ${r.status}${body ? ` — ${body.slice(0, 200)}` : ""}`);
+            const detail = sanitizeBody(body);
+            const hint = r.status === 401 || r.status === 403
+                ? " (check BASIC_AUTH_USER / BASIC_AUTH_PASSWORD)"
+                : "";
+            throw new Error(`cura generate failed: HTTP ${r.status}${hint}${detail ? ` — ${detail}` : ""}`);
         }
         const data = (await r.json());
         return data.response ?? "";
