@@ -7,12 +7,12 @@ import { recoverRepo, printReport, summarize, type RecoveryReport } from "../rec
 import { c, kv, section } from "../ui.js";
 import { BIN_NAME } from "../identity.js";
 
-// npm 11.x git fetcher leaves node_modules/chi as a dangling symlink to
+// npm 11.x git fetcher leaves node_modules/luma as a dangling symlink to
 // <cache>/_cacache/tmp/git-clone<rand> on Windows global installs, so we
 // install from a release-asset tarball URL (npm tarball fetcher, different
-// pacote code path) instead of github:chevp/chi. The asset is produced by
+// pacote code path) instead of github:chevp/luma. The asset is produced by
 // .github/workflows/release.yml on every vX.Y.Z tag.
-const REMOTE = "https://github.com/chevp/chi/releases/latest/download/chi.tgz";
+const REMOTE = "https://github.com/chevp/luma/releases/latest/download/luma.tgz";
 
 const HELP = `${BIN_NAME} update — repair workspace state, then update ${BIN_NAME} itself.
 
@@ -84,7 +84,7 @@ function clearStaleGlobalSymlink(): boolean {
   if (!r.ok) return false;
   const globalDir = r.stdout.trim();
   if (!globalDir) return false;
-  const pkgPath = join(globalDir, "chi");
+  const pkgPath = join(globalDir, "luma");
   let stat;
   try {
     stat = lstatSync(pkgPath);
@@ -108,14 +108,14 @@ function clearStaleGlobalSymlink(): boolean {
 }
 
 /**
- * Find any chi-<version>.tgz tarballs left in `root` from previous packs.
+ * Find any luma-<version>.tgz tarballs left in `root` from previous packs.
  * Used both to clean up before packing fresh and to locate the produced
  * tarball after `npm pack` (whose name varies with the package version).
  */
-function findChiTarballs(root: string): string[] {
+function findLumaTarballs(root: string): string[] {
   try {
     return readdirSync(root)
-      .filter((f) => /^chi-.*\.tgz$/.test(f))
+      .filter((f) => /^luma-.*\.tgz$/.test(f))
       .map((f) => join(root, f));
   } catch {
     return [];
@@ -153,7 +153,7 @@ async function selfUpdateFromWorkspaceClone(root: string, oldVersion: string | n
 
   // Clean any stale tarballs from previous attempts so we can identify the
   // one `npm pack` produces this run.
-  for (const old of findChiTarballs(root)) {
+  for (const old of findLumaTarballs(root)) {
     try {
       unlinkSync(old);
     } catch {
@@ -164,10 +164,10 @@ async function selfUpdateFromWorkspaceClone(root: string, oldVersion: string | n
   const pack = await execInherit("npm", ["pack"], { cwd: root });
   if (pack !== 0) return pack;
 
-  const tarballs = findChiTarballs(root);
+  const tarballs = findLumaTarballs(root);
   const tarball = tarballs[0];
   if (!tarball) {
-    process.stderr.write(`${BIN_NAME} update: npm pack produced no chi-*.tgz in ${root}\n`);
+    process.stderr.write(`${BIN_NAME} update: npm pack produced no luma-*.tgz in ${root}\n`);
     return 1;
   }
 
@@ -209,7 +209,7 @@ async function selfUpdateFromGithub(): Promise<number> {
 
   const npmRootRes = execSync("npm", ["root", "-g"]);
   const npmGlobalDir = npmRootRes.ok ? npmRootRes.stdout.trim() : "";
-  const installedRoot = npmGlobalDir ? join(npmGlobalDir, "chi") : "";
+  const installedRoot = npmGlobalDir ? join(npmGlobalDir, "luma") : "";
   const newVersion = installedRoot ? readPackageVersion(installedRoot) : null;
   section(`== summary ==`);
   if (newVersion) {
@@ -224,8 +224,8 @@ async function selfUpdateFromGithub(): Promise<number> {
 /**
  * Decide where to pack from. Priority:
  *   1. If the running binary lives inside a workspace clone, use that path.
- *   2. Else, if `process.cwd()` is a chi workspace clone (has .git + a
- *      package.json with name "chi"), use cwd.
+ *   2. Else, if `process.cwd()` is a luma workspace clone (has .git + a
+ *      package.json with name "luma"), use cwd.
  *   3. Else, no workspace source — caller falls back to github URL install.
  *
  * Returns null if no workspace clone could be located.
@@ -237,9 +237,9 @@ function locateWorkspaceClone(binRoot: string): string | null {
   if (existsSync(join(cwd, ".git"))) {
     try {
       const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as { name?: unknown };
-      if (pkg.name === "chi") return cwd;
+      if (pkg.name === "luma") return cwd;
     } catch {
-      // not a chi clone, fall through
+      // not a luma clone, fall through
     }
   }
   return null;
@@ -250,18 +250,18 @@ async function selfUpdate(): Promise<number> {
   const realBin = invokedBin ? realpathSync(invokedBin) : "";
   const root = findPackageRoot(dirname(realBin));
   if (!root) {
-    process.stderr.write(`${BIN_NAME} update: could not locate the chi package root from ${realBin}\n`);
+    process.stderr.write(`${BIN_NAME} update: could not locate the luma package root from ${realBin}\n`);
     return 1;
   }
 
   // Find a workspace clone to pack from: prefer the running binary's root if
   // it's a clone (the npm-link case), otherwise use the current working dir
-  // if it's a chi clone. If neither, we're a true global install with no
+  // if it's a luma clone. If neither, we're a true global install with no
   // local source — fall back to github URL install.
   const workspaceClone = locateWorkspaceClone(root);
   const npmRootRes = execSync("npm", ["root", "-g"]);
   const npmGlobalDir = npmRootRes.ok ? npmRootRes.stdout.trim() : "";
-  const npmGlobalPkg = npmGlobalDir ? join(npmGlobalDir, "chi") : "";
+  const npmGlobalPkg = npmGlobalDir ? join(npmGlobalDir, "luma") : "";
 
   const oldVersion = readPackageVersion(workspaceClone ?? root);
 
