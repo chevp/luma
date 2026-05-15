@@ -11,6 +11,7 @@ import { listActiveChiFlows } from "./work.js";
 import { discoverRepos, repoLabel } from "../workspace.js";
 import { activeProviderName, getProvider, providerEnsureRunning, providerSmartGenerate, } from "../provider/index.js";
 import { withSpinner } from "../spinner.js";
+import { maybePrintUpdateNotice } from "../version-check.js";
 const HELP = `${BIN_NAME} ship — for this repo and every submodule (recursively):
   init if missing, fast-forward pull if on a branch, then add + commit + push.
 
@@ -307,6 +308,13 @@ async function globalShip(argv) {
     return 0;
 }
 export async function run(argv) {
+    const rc = await shipImpl(argv);
+    if (process.env.__CHI_NESTED !== "1" && !isDry()) {
+        await maybePrintUpdateNotice();
+    }
+    return rc;
+}
+async function shipImpl(argv) {
     if (argv[0] === "-h" || argv[0] === "--help") {
         process.stdout.write(HELP);
         return 0;

@@ -16,6 +16,7 @@ import {
   providerSmartGenerate,
 } from "../provider/index.js";
 import { withSpinner } from "../spinner.js";
+import { maybePrintUpdateNotice } from "../version-check.js";
 
 const HELP = `${BIN_NAME} ship — for this repo and every submodule (recursively):
   init if missing, fast-forward pull if on a branch, then add + commit + push.
@@ -368,6 +369,14 @@ async function globalShip(argv: string[]): Promise<number> {
 }
 
 export async function run(argv: string[]): Promise<number> {
+  const rc = await shipImpl(argv);
+  if (process.env.__CHI_NESTED !== "1" && !isDry()) {
+    await maybePrintUpdateNotice();
+  }
+  return rc;
+}
+
+async function shipImpl(argv: string[]): Promise<number> {
   if (argv[0] === "-h" || argv[0] === "--help") {
     process.stdout.write(HELP);
     return 0;
