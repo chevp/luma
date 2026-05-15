@@ -20,8 +20,19 @@ first call open a draft PR via gh.
 Workspace-root mode (cwd is not a git repo):
   Discover repos one or two levels deep, optionally clone any missing repos
   via misc/chevp-setup/clone-all.py, then run \`${BIN_NAME} ship\` in each.
+
+Options:
+  --dry, --dry-run   training mode: print what would happen, write nothing.
+                     Propagates into submodules and workspace fan-out.
 `;
 const SELF_BIN = process.argv[1] ?? "chi";
+const DRY_ENV = "__LUMA_DRY";
+function isDry() {
+    return process.env[DRY_ENV] === "1";
+}
+function dryNote(msg) {
+    process.stdout.write(`${c.yellow("[DRY]")} ${c.dim(`${BIN_NAME} ship:`)} ${msg}\n`);
+}
 /** Increment a semver string by the given level. Returns null if unparseable. */
 function nextSemver(version, level) {
     const m = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(version);
@@ -161,6 +172,13 @@ async function maybeBumpVersions(repoRoot) {
     if (!hasPkg && !hasCMake)
         return;
     const level = await decideBumpLevel(repoRoot);
+    if (isDry()) {
+        const files = [hasPkg ? "package.json" : "", hasCMake ? "CMakeLists.txt" : ""]
+            .filter(Boolean)
+            .join(", ");
+        dryNote(`would bump ${c.cyan(files)} (${c.green(level)})`);
+        return;
+    }
     if (hasPkg)
         bumpPackageJson(repoRoot, level);
     if (hasCMake)
@@ -226,18 +244,23 @@ async function globalShip(argv) {
     if (!skipClone && existsSync(cloneScript)) {
         process.stdout.write(`${c.bold(c.magenta("== sync workspace =="))}\n`);
         process.stdout.write(`  ${sym.arrow} ${c.dim(cloneScript.replace(/\\/g, "/"))}\n`);
-        const py = commandExists("python")
-            ? "python"
-            : commandExists("python3")
-                ? "python3"
-                : "";
-        if (!py) {
-            process.stdout.write(`  ${c.yellow("python not on PATH — skipping clone-all (re-run with python installed to fetch missing repos)")}\n`);
+        if (isDry()) {
+            dryNote(`would run ${c.cyan(cloneScript.replace(/\\/g, "/"))}`);
         }
         else {
-            const rc = await execInherit(py, [cloneScript], { cwd });
-            if (rc !== 0) {
-                process.stdout.write(`  ${c.yellow(`clone-all exited ${rc} — continuing with locally available repos`)}\n`);
+            const py = commandExists("python")
+                ? "python"
+                : commandExists("python3")
+                    ? "python3"
+                    : "";
+            if (!py) {
+                process.stdout.write(`  ${c.yellow("python not on PATH — skipping clone-all (re-run with python installed to fetch missing repos)")}\n`);
+            }
+            else {
+                const rc = await execInherit(py, [cloneScript], { cwd });
+                if (rc !== 0) {
+                    process.stdout.write(`  ${c.yellow(`clone-all exited ${rc} — continuing with locally available repos`)}\n`);
+                }
             }
         }
     }
@@ -258,7 +281,11 @@ async function globalShip(argv) {
         process.stdout.write(`\n${c.bold(c.cyan(`── ${label} ──`))}\n`);
         const rc = await execInherit(process.execPath, [SELF_BIN, "ship"], {
             cwd: info.path,
-            env: { ...process.env, __CHI_NESTED: "1" },
+            env: {
+                ...process.env,
+                __CHI_NESTED: "1",
+                ...(isDry() ? { [DRY_ENV]: "1" } : {}),
+            },
         });
         if (rc !== 0) {
             failures.push(label);
@@ -284,8 +311,18 @@ export async function run(argv) {
         process.stdout.write(HELP);
         return 0;
     }
+    // Adopt --dry / --dry-run from CLI into the env so nested invocations
+    // (submodules, workspace fan-out) inherit it automatically.
+    if (argv.includes("--dry") || argv.includes("--dry-run")) {
+        process.env[DRY_ENV] = "1";
+    }
+    const cleanArgv = argv.filter((a) => a !== "--dry" && a !== "--dry-run");
+    const dry = isDry();
+    if (dry && process.env.__CHI_NESTED !== "1") {
+        process.stdout.write(`${c.bold(c.yellow("== dry-run / training mode =="))} ${c.dim("(no writes, no pushes, no PRs)")}\n`);
+    }
     if (!isInsideRepo()) {
-        return globalShip(argv);
+        return globalShip(cleanArgv);
     }
     const repoRoot = git(["rev-parse", "--show-toplevel"]).stdout.trim();
     const dir = gitDir();
@@ -305,20 +342,34 @@ export async function run(argv) {
             const smPath = trimmed.split(/\s+/, 2)[1];
             if (!smPath)
                 continue;
-            const init = git(["-C", repoRoot, "submodule", "update", "--init", "--", smPath]);
-            if (!init.ok) {
-                failed.push(`${smPath} (init failed)`);
-                process.stderr.write(`chi ship: submodule update failed for '${smPath}' — skipping (continuing)\n`);
-                continue;
+            if (dry) {
+                dryNote(`would init/update submodule ${c.cyan(smPath)}`);
+            }
+            else {
+                const init = git(["-C", repoRoot, "submodule", "update", "--init", "--", smPath]);
+                if (!init.ok) {
+                    failed.push(`${smPath} (init failed)`);
+                    process.stderr.write(`chi ship: submodule update failed for '${smPath}' — skipping (continuing)\n`);
+                    continue;
+                }
             }
             const smAbs = join(repoRoot, smPath);
-            if (!existsSync(join(smAbs, ".git")))
+            if (!existsSync(join(smAbs, ".git"))) {
+                if (dry) {
+                    dryNote(`submodule ${c.cyan(smPath)} not checked out — would recurse after init`);
+                }
                 continue;
+            }
             // ff-pull on a branch only.
             if (git(["-C", smAbs, "symbolic-ref", "-q", "HEAD"]).ok) {
-                const ff = git(["-C", smAbs, "pull", "--ff-only", "--quiet"]);
-                if (!ff.ok) {
-                    process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} pull failed in ${c.cyan(smPath)} ${c.dim("(continuing)")}\n`);
+                if (dry) {
+                    dryNote(`would pull --ff-only in ${c.cyan(smPath)}`);
+                }
+                else {
+                    const ff = git(["-C", smAbs, "pull", "--ff-only", "--quiet"]);
+                    if (!ff.ok) {
+                        process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} pull failed in ${c.cyan(smPath)} ${c.dim("(continuing)")}\n`);
+                    }
                 }
             }
             else {
@@ -326,7 +377,11 @@ export async function run(argv) {
             }
             const subRc = await execInherit(process.execPath, [SELF_BIN, "ship"], {
                 cwd: smAbs,
-                env: { ...process.env, __CHI_NESTED: "1" },
+                env: {
+                    ...process.env,
+                    __CHI_NESTED: "1",
+                    ...(dry ? { [DRY_ENV]: "1" } : {}),
+                },
             });
             if (subRc !== 0) {
                 failed.push(`${smPath} (ship failed)`);
@@ -340,7 +395,8 @@ export async function run(argv) {
         }
     }
     // --- pull main repo before commit/push: ff-only first, fall back to rebase ---
-    if (git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok &&
+    if (!dry &&
+        git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok &&
         git(["-C", repoRoot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).ok) {
         const ff = git(["-C", repoRoot, "pull", "--ff-only", "--autostash"]);
         if (!ff.ok) {
@@ -406,6 +462,11 @@ export async function run(argv) {
             }
         }
     }
+    else if (dry &&
+        git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok &&
+        git(["-C", repoRoot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).ok) {
+        dryNote(`would pull ${c.cyan(basename(repoRoot))} (ff-only, rebase on fallback)`);
+    }
     // --- flow mode ---
     if (existsSync(marker)) {
         const m = readMarker(marker);
@@ -429,9 +490,19 @@ export async function run(argv) {
             if (flowDirty)
                 await maybeBumpVersions(repoRoot);
         }
-        const commitRc = await commitRun(["--yes"]);
+        const commitRc = await commitRun(dry ? ["--dry-run"] : ["--yes"]);
         if (commitRc !== 0)
             return commitRc;
+        if (dry) {
+            dryNote(`would push -u origin ${c.cyan(m.branch)}`);
+            if (!m.pr) {
+                dryNote(`would open draft PR via gh: ${c.cyan(m.branch)} → ${c.cyan(base)}`);
+            }
+            else {
+                dryNote(`would update PR #${m.pr}`);
+            }
+            return 0;
+        }
         const pushRc = await pushWithRecovery({ args: ["-u", "origin", m.branch] });
         if (pushRc !== 0)
             return pushRc;
@@ -484,7 +555,7 @@ export async function run(argv) {
         return 0;
     }
     // --- detached HEAD recovery before deciding clean/dirty ---
-    if (!git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
+    if (!dry && !git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
         const detachedSha = git(["-C", repoRoot, "rev-parse", "HEAD"]).stdout.trim();
         let recoverBranch = "";
         let recoverFromRemote = false;
@@ -573,12 +644,15 @@ export async function run(argv) {
             process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} detached HEAD at ${c.yellow(detachedSha.slice(0, 12))} ${c.dim("(no local or remote branch contains this commit)")}\n`);
         }
     }
+    else if (dry && !git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
+        dryNote(`detached HEAD — would attempt recovery to a tracking branch`);
+    }
     // --- rebase onto default branch (e.g. origin/main) before pushing ---
     // Keeps feature branches up to date with main so a PR back to main is
     // always trivially mergeable. If a rebase rewrites history, the subsequent
     // push must use --force-with-lease.
     let needForceWithLease = false;
-    if (git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
+    if (!dry && git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
         const curBranch = git(["-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD"]).stdout.trim();
         const headRef = git([
             "-C", repoRoot, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD",
@@ -672,6 +746,10 @@ export async function run(argv) {
             }
         }
     }
+    else if (dry && git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
+        const curBranch = git(["-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD"]).stdout.trim();
+        dryNote(`would fetch origin and rebase ${c.cyan(curBranch)} onto default branch if behind`);
+    }
     // Compact path: nothing in the working tree → one-line status, skip commit.
     const dirty = git(["-C", repoRoot, "status", "--porcelain"]).stdout.trim();
     // Auto-bump version metadata on top-level ships when there are pending
@@ -683,12 +761,17 @@ export async function run(argv) {
     if (!dirty) {
         if (needForceWithLease) {
             process.stdout.write(`\n${c.bold(c.cyan(`── repo: ${basename(repoRoot)} (rebased) ──`))}\n`);
-            const rc = await pushWithRecovery({
-                args: ["--force-with-lease"],
-                cwd: repoRoot,
-            });
-            if (rc !== 0)
-                return rc;
+            if (dry) {
+                dryNote(`would push --force-with-lease`);
+            }
+            else {
+                const rc = await pushWithRecovery({
+                    args: ["--force-with-lease"],
+                    cwd: repoRoot,
+                });
+                if (rc !== 0)
+                    return rc;
+            }
         }
         else {
             process.stdout.write(`${sym.ok} ${c.bold(basename(repoRoot))}${c.dim(":")} ${c.green("clean")}\n`);
@@ -711,7 +794,15 @@ export async function run(argv) {
     process.stdout.write(`\n${c.bold(c.cyan(`── repo: ${basename(repoRoot)} ──`))}\n`);
     let rc;
     if (git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
-        if (needForceWithLease) {
+        if (dry) {
+            rc = await commitRun(["--dry-run"]);
+            if (rc !== 0)
+                return rc;
+            dryNote(needForceWithLease
+                ? `would push --force-with-lease`
+                : `would commit + push`);
+        }
+        else if (needForceWithLease) {
             rc = await commitRun(["--yes"]);
             if (rc !== 0)
                 return rc;
@@ -726,7 +817,7 @@ export async function run(argv) {
     }
     else {
         process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} still in detached HEAD, ${c.yellow("committing without push")}\n`);
-        rc = await commitRun(["--yes"]);
+        rc = await commitRun(dry ? ["--dry-run"] : ["--yes"]);
     }
     return rc;
 }

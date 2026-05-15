@@ -26,9 +26,25 @@ first call open a draft PR via gh.
 Workspace-root mode (cwd is not a git repo):
   Discover repos one or two levels deep, optionally clone any missing repos
   via misc/chevp-setup/clone-all.py, then run \`${BIN_NAME} ship\` in each.
+
+Options:
+  --dry, --dry-run   training mode: print what would happen, write nothing.
+                     Propagates into submodules and workspace fan-out.
 `;
 
 const SELF_BIN = process.argv[1] ?? "chi";
+
+const DRY_ENV = "__LUMA_DRY";
+
+function isDry(): boolean {
+  return process.env[DRY_ENV] === "1";
+}
+
+function dryNote(msg: string): void {
+  process.stdout.write(
+    `${c.yellow("[DRY]")} ${c.dim(`${BIN_NAME} ship:`)} ${msg}\n`,
+  );
+}
 
 type BumpLevel = "patch" | "minor" | "major";
 
@@ -200,6 +216,13 @@ async function maybeBumpVersions(repoRoot: string): Promise<void> {
   if (!hasPkg && !hasCMake) return;
 
   const level = await decideBumpLevel(repoRoot);
+  if (isDry()) {
+    const files = [hasPkg ? "package.json" : "", hasCMake ? "CMakeLists.txt" : ""]
+      .filter(Boolean)
+      .join(", ");
+    dryNote(`would bump ${c.cyan(files)} (${c.green(level)})`);
+    return;
+  }
   if (hasPkg) bumpPackageJson(repoRoot, level);
   if (hasCMake) bumpCMakeLists(repoRoot, level);
 }
@@ -269,21 +292,25 @@ async function globalShip(argv: string[]): Promise<number> {
   if (!skipClone && existsSync(cloneScript)) {
     process.stdout.write(`${c.bold(c.magenta("== sync workspace =="))}\n`);
     process.stdout.write(`  ${sym.arrow} ${c.dim(cloneScript.replace(/\\/g, "/"))}\n`);
-    const py = commandExists("python")
-      ? "python"
-      : commandExists("python3")
-        ? "python3"
-        : "";
-    if (!py) {
-      process.stdout.write(
-        `  ${c.yellow("python not on PATH — skipping clone-all (re-run with python installed to fetch missing repos)")}\n`,
-      );
+    if (isDry()) {
+      dryNote(`would run ${c.cyan(cloneScript.replace(/\\/g, "/"))}`);
     } else {
-      const rc = await execInherit(py, [cloneScript], { cwd });
-      if (rc !== 0) {
+      const py = commandExists("python")
+        ? "python"
+        : commandExists("python3")
+          ? "python3"
+          : "";
+      if (!py) {
         process.stdout.write(
-          `  ${c.yellow(`clone-all exited ${rc} — continuing with locally available repos`)}\n`,
+          `  ${c.yellow("python not on PATH — skipping clone-all (re-run with python installed to fetch missing repos)")}\n`,
         );
+      } else {
+        const rc = await execInherit(py, [cloneScript], { cwd });
+        if (rc !== 0) {
+          process.stdout.write(
+            `  ${c.yellow(`clone-all exited ${rc} — continuing with locally available repos`)}\n`,
+          );
+        }
       }
     }
   } else if (!skipClone) {
@@ -312,7 +339,11 @@ async function globalShip(argv: string[]): Promise<number> {
     process.stdout.write(`\n${c.bold(c.cyan(`── ${label} ──`))}\n`);
     const rc = await execInherit(process.execPath, [SELF_BIN, "ship"], {
       cwd: info.path,
-      env: { ...process.env, __CHI_NESTED: "1" },
+      env: {
+        ...process.env,
+        __CHI_NESTED: "1",
+        ...(isDry() ? { [DRY_ENV]: "1" } : {}),
+      },
     });
     if (rc !== 0) {
       failures.push(label);
@@ -342,8 +373,21 @@ export async function run(argv: string[]): Promise<number> {
     return 0;
   }
 
+  // Adopt --dry / --dry-run from CLI into the env so nested invocations
+  // (submodules, workspace fan-out) inherit it automatically.
+  if (argv.includes("--dry") || argv.includes("--dry-run")) {
+    process.env[DRY_ENV] = "1";
+  }
+  const cleanArgv = argv.filter((a) => a !== "--dry" && a !== "--dry-run");
+  const dry = isDry();
+  if (dry && process.env.__CHI_NESTED !== "1") {
+    process.stdout.write(
+      `${c.bold(c.yellow("== dry-run / training mode =="))} ${c.dim("(no writes, no pushes, no PRs)")}\n`,
+    );
+  }
+
   if (!isInsideRepo()) {
-    return globalShip(argv);
+    return globalShip(cleanArgv);
   }
 
   const repoRoot = git(["rev-parse", "--show-toplevel"]).stdout.trim();
@@ -365,25 +409,38 @@ export async function run(argv: string[]): Promise<number> {
       const smPath = trimmed.split(/\s+/, 2)[1];
       if (!smPath) continue;
 
-      const init = git(["-C", repoRoot, "submodule", "update", "--init", "--", smPath]);
-      if (!init.ok) {
-        failed.push(`${smPath} (init failed)`);
-        process.stderr.write(
-          `chi ship: submodule update failed for '${smPath}' — skipping (continuing)\n`,
-        );
-        continue;
+      if (dry) {
+        dryNote(`would init/update submodule ${c.cyan(smPath)}`);
+      } else {
+        const init = git(["-C", repoRoot, "submodule", "update", "--init", "--", smPath]);
+        if (!init.ok) {
+          failed.push(`${smPath} (init failed)`);
+          process.stderr.write(
+            `chi ship: submodule update failed for '${smPath}' — skipping (continuing)\n`,
+          );
+          continue;
+        }
       }
 
       const smAbs = join(repoRoot, smPath);
-      if (!existsSync(join(smAbs, ".git"))) continue;
+      if (!existsSync(join(smAbs, ".git"))) {
+        if (dry) {
+          dryNote(`submodule ${c.cyan(smPath)} not checked out — would recurse after init`);
+        }
+        continue;
+      }
 
       // ff-pull on a branch only.
       if (git(["-C", smAbs, "symbolic-ref", "-q", "HEAD"]).ok) {
-        const ff = git(["-C", smAbs, "pull", "--ff-only", "--quiet"]);
-        if (!ff.ok) {
-          process.stdout.write(
-            `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} pull failed in ${c.cyan(smPath)} ${c.dim("(continuing)")}\n`,
-          );
+        if (dry) {
+          dryNote(`would pull --ff-only in ${c.cyan(smPath)}`);
+        } else {
+          const ff = git(["-C", smAbs, "pull", "--ff-only", "--quiet"]);
+          if (!ff.ok) {
+            process.stdout.write(
+              `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} pull failed in ${c.cyan(smPath)} ${c.dim("(continuing)")}\n`,
+            );
+          }
         }
       } else {
         process.stdout.write(
@@ -393,7 +450,11 @@ export async function run(argv: string[]): Promise<number> {
 
       const subRc = await execInherit(process.execPath, [SELF_BIN, "ship"], {
         cwd: smAbs,
-        env: { ...process.env, __CHI_NESTED: "1" },
+        env: {
+          ...process.env,
+          __CHI_NESTED: "1",
+          ...(dry ? { [DRY_ENV]: "1" } : {}),
+        },
       });
       if (subRc !== 0) {
         failed.push(`${smPath} (ship failed)`);
@@ -413,6 +474,7 @@ export async function run(argv: string[]): Promise<number> {
 
   // --- pull main repo before commit/push: ff-only first, fall back to rebase ---
   if (
+    !dry &&
     git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok &&
     git(["-C", repoRoot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).ok
   ) {
@@ -495,6 +557,12 @@ export async function run(argv: string[]): Promise<number> {
         }
       }
     }
+  } else if (
+    dry &&
+    git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok &&
+    git(["-C", repoRoot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).ok
+  ) {
+    dryNote(`would pull ${c.cyan(basename(repoRoot))} (ff-only, rebase on fallback)`);
   }
 
   // --- flow mode ---
@@ -527,8 +595,18 @@ export async function run(argv: string[]): Promise<number> {
       if (flowDirty) await maybeBumpVersions(repoRoot);
     }
 
-    const commitRc = await commitRun(["--yes"]);
+    const commitRc = await commitRun(dry ? ["--dry-run"] : ["--yes"]);
     if (commitRc !== 0) return commitRc;
+
+    if (dry) {
+      dryNote(`would push -u origin ${c.cyan(m.branch)}`);
+      if (!m.pr) {
+        dryNote(`would open draft PR via gh: ${c.cyan(m.branch)} → ${c.cyan(base)}`);
+      } else {
+        dryNote(`would update PR #${m.pr}`);
+      }
+      return 0;
+    }
 
     const pushRc = await pushWithRecovery({ args: ["-u", "origin", m.branch] });
     if (pushRc !== 0) return pushRc;
@@ -583,7 +661,7 @@ export async function run(argv: string[]): Promise<number> {
   }
 
   // --- detached HEAD recovery before deciding clean/dirty ---
-  if (!git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
+  if (!dry && !git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
     const detachedSha = git(["-C", repoRoot, "rev-parse", "HEAD"]).stdout.trim();
     let recoverBranch = "";
     let recoverFromRemote = false;
@@ -677,6 +755,8 @@ export async function run(argv: string[]): Promise<number> {
         `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} detached HEAD at ${c.yellow(detachedSha.slice(0, 12))} ${c.dim("(no local or remote branch contains this commit)")}\n`,
       );
     }
+  } else if (dry && !git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
+    dryNote(`detached HEAD — would attempt recovery to a tracking branch`);
   }
 
   // --- rebase onto default branch (e.g. origin/main) before pushing ---
@@ -684,7 +764,7 @@ export async function run(argv: string[]): Promise<number> {
   // always trivially mergeable. If a rebase rewrites history, the subsequent
   // push must use --force-with-lease.
   let needForceWithLease = false;
-  if (git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
+  if (!dry && git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
     const curBranch = git(
       ["-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD"],
     ).stdout.trim();
@@ -786,6 +866,11 @@ export async function run(argv: string[]): Promise<number> {
         }
       }
     }
+  } else if (dry && git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
+    const curBranch = git(
+      ["-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD"],
+    ).stdout.trim();
+    dryNote(`would fetch origin and rebase ${c.cyan(curBranch)} onto default branch if behind`);
   }
 
   // Compact path: nothing in the working tree → one-line status, skip commit.
@@ -801,11 +886,15 @@ export async function run(argv: string[]): Promise<number> {
       process.stdout.write(
         `\n${c.bold(c.cyan(`── repo: ${basename(repoRoot)} (rebased) ──`))}\n`,
       );
-      const rc = await pushWithRecovery({
-        args: ["--force-with-lease"],
-        cwd: repoRoot,
-      });
-      if (rc !== 0) return rc;
+      if (dry) {
+        dryNote(`would push --force-with-lease`);
+      } else {
+        const rc = await pushWithRecovery({
+          args: ["--force-with-lease"],
+          cwd: repoRoot,
+        });
+        if (rc !== 0) return rc;
+      }
     } else {
       process.stdout.write(
         `${sym.ok} ${c.bold(basename(repoRoot))}${c.dim(":")} ${c.green("clean")}\n`,
@@ -837,7 +926,15 @@ export async function run(argv: string[]): Promise<number> {
 
   let rc: number;
   if (git(["-C", repoRoot, "symbolic-ref", "-q", "HEAD"]).ok) {
-    if (needForceWithLease) {
+    if (dry) {
+      rc = await commitRun(["--dry-run"]);
+      if (rc !== 0) return rc;
+      dryNote(
+        needForceWithLease
+          ? `would push --force-with-lease`
+          : `would commit + push`,
+      );
+    } else if (needForceWithLease) {
       rc = await commitRun(["--yes"]);
       if (rc !== 0) return rc;
       rc = await pushWithRecovery({
@@ -851,7 +948,7 @@ export async function run(argv: string[]): Promise<number> {
     process.stdout.write(
       `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} still in detached HEAD, ${c.yellow("committing without push")}\n`,
     );
-    rc = await commitRun(["--yes"]);
+    rc = await commitRun(dry ? ["--dry-run"] : ["--yes"]);
   }
   return rc;
 }
