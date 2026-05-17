@@ -18,6 +18,7 @@ import * as releaseCmd from "./commands/release.js";
 import * as consultCmd from "./commands/consult.js";
 import * as planCmd from "./commands/plan.js";
 import * as serveCmd from "./commands/serve.js";
+import * as repoCmd from "./commands/repo.js";
 import { resolveTrigger } from "./workflow/loader.js";
 
 type CommandRunner = (argv: string[]) => Promise<number>;
@@ -41,6 +42,7 @@ const COMMANDS: Record<string, CommandRunner> = {
   consult: consultCmd.run,
   plan: planCmd.run,
   serve: serveCmd.run,
+  repo: repoCmd.run,
 
   help: helpCmd.run,
   "-h": helpCmd.run,

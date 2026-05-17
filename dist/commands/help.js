@@ -42,6 +42,8 @@ Commands:
                       e.g. '${n} config provider claude-code'
   doctor [target]     verify deps and providers (git, gh, docker, ollama,
                       claude-code, copilot, workflow)
+  repo [--fix]        diagnose repo hygiene (missing .gitignore, tracked build
+                      artifacts, broken gitlinks); --fix applies fixes
   serve [--port N]    start the local web console (chat UI over cura)
   help                show this message
 
