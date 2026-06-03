@@ -1,5 +1,5 @@
 import { basename, dirname, join } from "node:path";
-import { existsSync, appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, renameSync } from "node:fs";
 import { commandExists, execInherit, execSync } from "../spawn.js";
 import { git, gitDir, isInsideRepo, pushWithRecovery } from "../git/index.js";
 import { resolveConflicts, finalizeRebase } from "../conflict.js";
@@ -8,10 +8,10 @@ import { BIN_NAME } from "../identity.js";
 import { readMarker } from "./flow.js";
 import { run as commitRun } from "./commit.js";
 import { listActiveChiFlows } from "./work.js";
-import { discoverRepos, repoLabel } from "../workspace.js";
-import { activeProviderName, getProvider, providerEnsureRunning, providerSmartGenerate, } from "../provider/index.js";
-import { withSpinner } from "../spinner.js";
 import { maybePrintUpdateNotice } from "../version-check.js";
+import { DRY_ENV, isDry, dryNote } from "../dry.js";
+import { maybeBumpVersions } from "../version-bump.js";
+import { globalShip } from "./ship-workspace.js";
 const HELP = `${BIN_NAME} ship — for this repo and every submodule (recursively):
   init if missing, fast-forward pull if on a branch, then add + commit + push.
 
@@ -27,164 +27,6 @@ Options:
                      Propagates into submodules and workspace fan-out.
 `;
 const SELF_BIN = process.argv[1] ?? "chi";
-const DRY_ENV = "__LUMA_DRY";
-function isDry() {
-    return process.env[DRY_ENV] === "1";
-}
-function dryNote(msg) {
-    process.stdout.write(`${c.yellow("[DRY]")} ${c.dim(`${BIN_NAME} ship:`)} ${msg}\n`);
-}
-/** Increment a semver string by the given level. Returns null if unparseable. */
-function nextSemver(version, level) {
-    const m = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(version);
-    if (!m)
-        return null;
-    const major = Number.parseInt(m[1] ?? "0", 10);
-    const minor = Number.parseInt(m[2] ?? "0", 10);
-    const patch = Number.parseInt(m[3] ?? "0", 10);
-    const suffix = m[4] ?? "";
-    if (level === "major")
-        return `${major + 1}.0.0${suffix}`;
-    if (level === "minor")
-        return `${major}.${minor + 1}.0${suffix}`;
-    return `${major}.${minor}.${patch + 1}${suffix}`;
-}
-/**
- * Ask the active LLM provider whether the pending diff warrants a patch,
- * minor, or major bump. Falls back to "patch" if the provider is unreachable,
- * returns garbage, or the diff is empty.
- *
- * Diff source is `git diff HEAD` — captures all tracked-file changes in the
- * worktree, which is what's about to be committed by ship.
- */
-async function decideBumpLevel(repoRoot) {
-    const fallback = "patch";
-    const diffRes = git(["-C", repoRoot, "diff", "HEAD", "--no-color"]);
-    const diff = diffRes.stdout;
-    if (!diff.trim())
-        return fallback;
-    const max = Number.parseInt(process.env.LUMA_MAX_DIFF_CHARS ?? process.env.CHI_MAX_DIFF_CHARS ?? "6000", 10) || 6000;
-    const trimmed = diff.length > max ? `${diff.slice(0, max)}\n\n[diff truncated at ${max} chars]` : diff;
-    const prompt = `You are choosing a semantic-version bump level for the following diff.\n` +
-        `Reply with EXACTLY ONE word, no punctuation, no explanation: patch, minor, or major.\n\n` +
-        `Rules:\n` +
-        `  - patch: bug fixes, internal refactors, docs, tests, build/CI tweaks, dependency bumps\n` +
-        `  - minor: new user-visible features, new public APIs, backward-compatible additions\n` +
-        `  - major: breaking changes to public API/CLI/config, removed features, behavior changes that require user action\n\n` +
-        `Diff:\n${trimmed}\n`;
-    try {
-        await providerEnsureRunning().catch(() => false);
-        const provider = getProvider();
-        const raw = await withSpinner(`choosing version bump via ${activeProviderName()} (${provider.activeModel()})`, () => providerSmartGenerate(prompt));
-        const word = raw.trim().toLowerCase().match(/\b(major|minor|patch)\b/)?.[1];
-        if (word === "major" || word === "minor" || word === "patch")
-            return word;
-        process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} LLM returned unrecognized bump level, ${c.yellow("defaulting to patch")}\n`);
-    }
-    catch (err) {
-        process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.yellow("bump-level inference failed")} ${c.dim(`(${err instanceof Error ? err.message : String(err)})`)} — ${c.yellow("defaulting to patch")}\n`);
-    }
-    return fallback;
-}
-/** Bump <repoRoot>/package.json's `version` field. Returns new version or null. */
-function bumpPackageJson(repoRoot, level) {
-    const pkgPath = join(repoRoot, "package.json");
-    if (!existsSync(pkgPath))
-        return null;
-    let raw;
-    try {
-        raw = readFileSync(pkgPath, "utf8");
-    }
-    catch {
-        return null;
-    }
-    let pkg;
-    try {
-        pkg = JSON.parse(raw);
-    }
-    catch {
-        process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} package.json is not valid JSON, ${c.yellow("skipping bump")}\n`);
-        return null;
-    }
-    if (typeof pkg.version !== "string") {
-        process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} package.json has no string version, ${c.yellow("skipping bump")}\n`);
-        return null;
-    }
-    const oldVersion = pkg.version;
-    const next = nextSemver(oldVersion, level);
-    if (!next) {
-        process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} version '${oldVersion}' is not parseable semver, ${c.yellow("skipping bump")}\n`);
-        return null;
-    }
-    const indentMatch = /\n([ \t]+)"/.exec(raw);
-    const indent = indentMatch?.[1] ?? "  ";
-    const trailingNewline = raw.endsWith("\n") ? "\n" : "";
-    pkg.version = next;
-    writeFileSync(pkgPath, JSON.stringify(pkg, null, indent) + trailingNewline);
-    process.stdout.write(`${sym.arrow} ${c.dim(`${BIN_NAME} ship:`)} bumped ${c.cyan("package.json")} ${c.dim(oldVersion + " →")} ${c.green(next)} ${c.dim(`(${level})`)}\n`);
-    return next;
-}
-/**
- * Bump the VERSION argument of the top-level `project(... VERSION X.Y.Z ...)`
- * call in <repoRoot>/CMakeLists.txt. Returns new version or null when the file
- * is missing, has no parseable VERSION, or the current value is non-semver.
- */
-function bumpCMakeLists(repoRoot, level) {
-    const cmPath = join(repoRoot, "CMakeLists.txt");
-    if (!existsSync(cmPath))
-        return null;
-    let raw;
-    try {
-        raw = readFileSync(cmPath, "utf8");
-    }
-    catch {
-        return null;
-    }
-    // Match project(... VERSION X.Y.Z[.W][suffix] ...) — case-insensitive, multi-line.
-    const projRe = /\b(project\s*\([^)]*?\bVERSION\s+)(\d+\.\d+\.\d+)([^\s)]*)/is;
-    const m = projRe.exec(raw);
-    if (!m) {
-        process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} CMakeLists.txt has no project(VERSION ...) directive, ${c.yellow("skipping bump")}\n`);
-        return null;
-    }
-    const oldVersion = m[2] ?? "";
-    const next = nextSemver(oldVersion, level);
-    if (!next) {
-        process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} CMake version '${oldVersion}' is not parseable semver, ${c.yellow("skipping bump")}\n`);
-        return null;
-    }
-    const newContent = raw.replace(projRe, (_full, prefix, _ver, tail) => `${prefix}${next}${tail}`);
-    writeFileSync(cmPath, newContent);
-    process.stdout.write(`${sym.arrow} ${c.dim(`${BIN_NAME} ship:`)} bumped ${c.cyan("CMakeLists.txt")} ${c.dim(oldVersion + " →")} ${c.green(next)} ${c.dim(`(${level})`)}\n`);
-    return next;
-}
-/**
- * Bump version metadata in known files (package.json, CMakeLists.txt) before
- * the next commit. Uses the LLM to choose patch/minor/major from the worktree
- * diff; falls back to patch when the provider is unreachable.
- *
- * No-op when neither file exists. Only callers that have already verified the
- * working tree is dirty AND that the call is top-level
- * (process.env.__CHI_NESTED !== "1") should invoke this.
- */
-async function maybeBumpVersions(repoRoot) {
-    const hasPkg = existsSync(join(repoRoot, "package.json"));
-    const hasCMake = existsSync(join(repoRoot, "CMakeLists.txt"));
-    if (!hasPkg && !hasCMake)
-        return;
-    const level = await decideBumpLevel(repoRoot);
-    if (isDry()) {
-        const files = [hasPkg ? "package.json" : "", hasCMake ? "CMakeLists.txt" : ""]
-            .filter(Boolean)
-            .join(", ");
-        dryNote(`would bump ${c.cyan(files)} (${c.green(level)})`);
-        return;
-    }
-    if (hasPkg)
-        bumpPackageJson(repoRoot, level);
-    if (hasCMake)
-        bumpCMakeLists(repoRoot, level);
-}
 /**
  * Parse `git pull/checkout/merge` stderr for the
  * "untracked working tree files would be overwritten" diagnostic and return
@@ -228,84 +70,6 @@ function backupBlockingFiles(repoRoot, paths) {
         }
     }
     return { backupDir, moved, failed };
-}
-/**
- * Workspace-root mode: discover repos under cwd and ship each.
- *
- * Before iterating, attempts to clone any repos listed in repo-map.json
- * via chevp-setup's clone-all.py (if both python and the script are
- * available). Failures in individual repos do not abort the rest.
- */
-async function globalShip(argv) {
-    const cwd = process.cwd();
-    const cwdFwd = cwd.replace(/\\/g, "/");
-    const skipClone = argv.includes("--no-clone");
-    // ---- 1. Optionally sync the workspace via chevp-setup ------------------
-    const cloneScript = join(cwd, "misc", "chevp-setup", "clone-all.py");
-    if (!skipClone && existsSync(cloneScript)) {
-        process.stdout.write(`${c.bold(c.magenta("== sync workspace =="))}\n`);
-        process.stdout.write(`  ${sym.arrow} ${c.dim(cloneScript.replace(/\\/g, "/"))}\n`);
-        if (isDry()) {
-            dryNote(`would run ${c.cyan(cloneScript.replace(/\\/g, "/"))}`);
-        }
-        else {
-            const py = commandExists("python")
-                ? "python"
-                : commandExists("python3")
-                    ? "python3"
-                    : "";
-            if (!py) {
-                process.stdout.write(`  ${c.yellow("python not on PATH — skipping clone-all (re-run with python installed to fetch missing repos)")}\n`);
-            }
-            else {
-                const rc = await execInherit(py, [cloneScript], { cwd });
-                if (rc !== 0) {
-                    process.stdout.write(`  ${c.yellow(`clone-all exited ${rc} — continuing with locally available repos`)}\n`);
-                }
-            }
-        }
-    }
-    else if (!skipClone) {
-        process.stdout.write(`  ${c.dim(`(no misc/chevp-setup/clone-all.py under ${cwdFwd} — skipping repo sync)`)}\n`);
-    }
-    // ---- 2. Discover repos (after clone-all so newly cloned ones count) ----
-    const repos = discoverRepos(cwd);
-    if (repos.length === 0) {
-        process.stderr.write(`${BIN_NAME} ship: no git repositories found under ${cwdFwd}\n`);
-        return 1;
-    }
-    process.stdout.write(`\n${c.bold(c.magenta(`== ship ${repos.length} repos ==`))}\n`);
-    const failures = [];
-    let shipped = 0;
-    for (const info of repos) {
-        const label = repoLabel(info);
-        process.stdout.write(`\n${c.bold(c.cyan(`── ${label} ──`))}\n`);
-        const rc = await execInherit(process.execPath, [SELF_BIN, "ship"], {
-            cwd: info.path,
-            env: {
-                ...process.env,
-                __CHI_NESTED: "1",
-                ...(isDry() ? { [DRY_ENV]: "1" } : {}),
-            },
-        });
-        if (rc !== 0) {
-            failures.push(label);
-        }
-        else {
-            shipped++;
-        }
-    }
-    process.stdout.write(`\n${c.bold(c.magenta("== summary =="))}\n`);
-    const okPart = `${sym.ok} ${c.green(`${shipped}/${repos.length} ok`)}`;
-    if (failures.length > 0) {
-        process.stdout.write(`  ${okPart}${c.dim(",")}  ${sym.err} ${c.red(`${failures.length} failed`)}\n`);
-        for (const f of failures) {
-            process.stdout.write(`    ${c.red("✗")} ${f}\n`);
-        }
-        return 1;
-    }
-    process.stdout.write(`  ${okPart}\n\n`);
-    return 0;
 }
 export async function run(argv) {
     const rc = await shipImpl(argv);
@@ -891,7 +655,7 @@ async function shipImpl(argv) {
         process.stdout.write(`${c.bold(c.yellow("== dry-run / training mode =="))} ${c.dim("(no writes, no pushes, no PRs)")}\n`);
     }
     if (!isInsideRepo()) {
-        return globalShip(cleanArgv);
+        return globalShip(cleanArgv, SELF_BIN);
     }
     const repoRoot = git(["rev-parse", "--show-toplevel"]).stdout.trim();
     const dir = gitDir();
