@@ -368,6 +368,17 @@ async function shipImpl(argv) {
                 }
                 continue;
             }
+            // The .git entry can exist yet be unusable: a stale gitlink left behind
+            // when a previous superproject layout was dismantled points at a
+            // .git/modules/… dir that no longer exists, so every git command inside
+            // fails with exit 128. Without this guard we'd misread that 128 as a
+            // detached HEAD below, then recurse `ship` into the dir — where
+            // isInsideRepo() is false, so it falls through to workspace-root mode
+            // and reports a spurious "ship failed". Verify it's a real repo first.
+            if (!git(["-C", smAbs, "rev-parse", "--git-dir"]).ok) {
+                process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} has a .git entry but is not a valid repo ${c.dim("(stale/orphaned gitlink) — skipping")}\n`);
+                continue;
+            }
             // ff-pull on a branch only.
             if (git(["-C", smAbs, "symbolic-ref", "-q", "HEAD"]).ok) {
                 if (dry) {
