@@ -53,7 +53,13 @@ function parseOverwrittenUntracked(stderr) {
  */
 function backupBlockingFiles(repoRoot, paths) {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const backupDir = join(repoRoot, ".git", `chi-overwrite-backup-${ts}`);
+    // Resolve the real git dir rather than assuming repoRoot/.git is a directory:
+    // in a submodule or linked worktree, repoRoot/.git is a gitlink *file*, so
+    // join(repoRoot, ".git", …) would be an invalid path (ENOTDIR on mkdir).
+    // --absolute-git-dir works in every layout; fall back only if it fails.
+    const resolved = git(["-C", repoRoot, "rev-parse", "--absolute-git-dir"]);
+    const gitDirPath = resolved.ok ? resolved.stdout.trim() : join(repoRoot, ".git");
+    const backupDir = join(gitDirPath, `chi-overwrite-backup-${ts}`);
     mkdirSync(backupDir, { recursive: true });
     let moved = 0;
     const failed = [];
