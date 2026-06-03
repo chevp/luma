@@ -1,5 +1,5 @@
 import { basename, dirname, join } from "node:path";
-import { existsSync, appendFileSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, renameSync, rmSync, lstatSync } from "node:fs";
 import { commandExists, execInherit, execSync } from "../spawn.js";
 import { git, gitDir, isInsideRepo, pushWithRecovery } from "../git/index.js";
 import { resolveConflicts, finalizeRebase } from "../conflict.js";
@@ -79,6 +79,58 @@ export async function run(argv) {
     return rc;
 }
 /**
+ * Recover a submodule whose `update --init` failed because its `.git` gitlink
+ * points at a `.git/modules/…` directory that no longer exists — the classic
+ * leftover from a dismantled superproject layout (e.g. when a workspace is
+ * split out of one big nested-submodule repo into independent clones).
+ *
+ * If the submodule path carries a regular-file `.git` that doesn't resolve to a
+ * usable repo, delete that stale gitlink. Then:
+ *   - a real submodule (160000 gitlink in the index) is re-initialized, which
+ *     re-clones it into this repo's own .git/modules;
+ *   - a vendored path (committed as regular files) needs nothing more — dropping
+ *     the dead gitlink is the whole fix, and the caller skips recursion.
+ *
+ * Returns true when the submodule is usable afterwards (or was vendored).
+ * Never removes a `.git` that is a real directory or a working gitlink.
+ */
+function tryHealOrphanedSubmodule(repoRoot, smPath, smAbs) {
+    const gitlink = join(smAbs, ".git");
+    if (!existsSync(gitlink))
+        return false;
+    try {
+        if (!lstatSync(gitlink).isFile())
+            return false; // a real .git directory — leave it
+    }
+    catch {
+        return false;
+    }
+    // Only act on a gitlink we can prove is dead; if it resolves, the init
+    // failure had some other cause and we shouldn't touch anything.
+    if (git(["-C", smAbs, "rev-parse", "--git-dir"]).ok)
+        return false;
+    process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} has an orphaned git-dir ${c.dim("(superproject layout removed) — removing stale gitlink and re-initializing")}\n`);
+    try {
+        rmSync(gitlink);
+    }
+    catch {
+        return false;
+    }
+    // Registered submodule → re-clone; vendored regular files → nothing to init.
+    const mode = git(["-C", repoRoot, "ls-files", "-s", "--", smPath]).stdout.trim().split(/\s+/)[0] ?? "";
+    if (mode !== "160000") {
+        process.stdout.write(`${sym.ok} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} ${c.dim("is vendored — removed stale gitlink")}\n`);
+        return true;
+    }
+    const retry = git(["-C", repoRoot, "submodule", "update", "--init", "--", smPath]);
+    if (retry.ok) {
+        process.stdout.write(`${sym.ok} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} ${c.green("re-initialized")}\n`);
+        return true;
+    }
+    process.stderr.write(retry.stderr);
+    return false;
+}
+/**
  * Recurse `ship` into every submodule declared in .gitmodules, fast-forward
  * pulling each on a branch first so the parent commit can include any pointer
  * bumps the children produce. No-op when the repo has no .gitmodules.
@@ -99,18 +151,21 @@ async function shipSubmodules(repoRoot, dry) {
         const smPath = trimmed.split(/\s+/, 2)[1];
         if (!smPath)
             continue;
+        const smAbs = join(repoRoot, smPath);
         if (dry) {
             dryNote(`would init/update submodule ${c.cyan(smPath)}`);
         }
         else {
             const init = git(["-C", repoRoot, "submodule", "update", "--init", "--", smPath]);
-            if (!init.ok) {
+            // An init failure is recoverable when it's caused by an orphaned git-dir
+            // (a dead gitlink left over from a dismantled superproject) — heal and
+            // retry once before giving up on this submodule.
+            if (!init.ok && !tryHealOrphanedSubmodule(repoRoot, smPath, smAbs)) {
                 failed.push(`${smPath} (init failed)`);
                 process.stderr.write(`chi ship: submodule update failed for '${smPath}' — skipping (continuing)\n`);
                 continue;
             }
         }
-        const smAbs = join(repoRoot, smPath);
         if (!existsSync(join(smAbs, ".git"))) {
             if (dry) {
                 dryNote(`submodule ${c.cyan(smPath)} not checked out — would recurse after init`);
