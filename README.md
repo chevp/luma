@@ -1,8 +1,8 @@
 # luma
 
-Node.js / TypeScript port of [che-cli](https://github.com/chevp/che-cli) — a small developer CLI that wraps git workflows and AI provider calls. Hand-rolled command dispatch, no runtime dependencies.
+Node.js / TypeScript port of [che-cli](https://github.com/chevp/che-cli) — a small developer CLI that wraps git workflows and AI provider calls. Hand-rolled command dispatch, ollama runtime dependencies.
 
-The LLM backend is hardwired to the **cura** Cloud Run endpoint (a hosted Ollama). No claude-code, no copilot, no local ollama, no docker.
+The LLM backend is hardwired to the **cura** Cloud Run endpoint (a hosted Ollama).
 
 ```sh
 $ luma status
@@ -26,14 +26,7 @@ Requires Node 20+.
 npm install -g https://github.com/chevp/luma/releases/latest/download/luma.tgz
 ```
 
-Installs the prebuilt npm tarball from the latest GitHub Release (CI-built on every `vX.Y.Z` tag) and places three binaries on PATH via npm's global bin: `luma`, `che`, and `jan`. All three resolve to the same launcher; each presents itself with its invoked name in help text and error prefixes (see [ADR-009](context/adr/ADR-009-unified-binary-aliases.md)).
-
-If a previous standalone `che-cli` or `jan-cli` is installed, uninstall it first so npm can claim the `che` / `jan` names:
-
-```sh
-npm uninstall -g che-cli jan-cli
-npm install -g https://github.com/chevp/luma/releases/latest/download/luma.tgz
-```
+Installs the prebuilt npm tarball from the latest GitHub Release (CI-built on every `vX.Y.Z` tag) and places three binaries on PATH via npm's global bin: `luma`, `che`, and `jan`. All three resolve to the same launcher; each presents itself with its invoked name in help text and error prefixes.
 
 ### From a local clone (development)
 
@@ -133,15 +126,15 @@ luma work list | rm <name> | cd <name>
 
 Persistent settings live in `~/.luma/config` (managed by `luma init` and `luma config`). Env vars always win over the file. The file is written with mode 600 on first save by `luma init`.
 
-| Key (`~/.luma/config`)  | Env var               | Default                                              |
+| Key (`~/.luma/config`)  | Env var               | Default                                             |
 |------------------------|-----------------------|------------------------------------------------------|
 | `basic_auth_user`      | `BASIC_AUTH_USER`     | **required**                                         |
 | `basic_auth_password`  | `BASIC_AUTH_PASSWORD` | **required**                                         |
-| `llm_url`              | `LUMA_LLM_URL`         | `https://cura-llm-3j2fyuwcdq-oa.a.run.app`           |
-| `llm_model`            | `LUMA_LLM_MODEL`       | `smollm2:135m`                                       |
-| `max_diff_chars`       | `LUMA_MAX_DIFF_CHARS`  | `8000`                                               |
-| —                      | `LUMA_CONFIG_FILE`     | `~/.luma/config`                                      |
-| —                      | `LUMA_INVOKED_AS`      | basename of `argv[1]` (e.g. `luma`, `jan`, `che`)     |
+| `llm_url`              | `LUMA_LLM_URL`         | `https://cura-llm-3j2fyuwcdq-oa.a.run.app`          |
+| `llm_model`            | `LUMA_LLM_MODEL`       | `smollm2:135m`                                      |
+| `max_diff_chars`       | `LUMA_MAX_DIFF_CHARS`  | `8000`                                              |
+| —                      | `LUMA_CONFIG_FILE`     | `~/.luma/config`                                    |
+| —                      | `LUMA_INVOKED_AS`      | basename of `argv[1]` (e.g. `luma`, `jan`, `che`)   |
 
 `LUMA_INVOKED_AS` lets a wrapper present luma under a different name — help text, status header, and error prefixes all switch to that name. Auto-detected from `argv[1]`, so the [chevp/jan-cli](https://github.com/chevp/jan-cli) wrapper picks up `jan` automatically without setting it.
 

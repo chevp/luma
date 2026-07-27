@@ -44,6 +44,8 @@ Commands:
                       claude-code, copilot, workflow)
   repo [--fix]        diagnose repo hygiene (missing .gitignore, tracked build
                       artifacts, broken gitlinks); --fix applies fixes
+  inspect             repo snapshot across the workspace (LOC, files, deps,
+                      complexity, scale, public/private) — like git diff --stat
   serve [--port N]    start the local web console (chat UI over cura)
   help                show this message
 

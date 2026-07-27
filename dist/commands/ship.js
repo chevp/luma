@@ -14,6 +14,9 @@ import { maybeBumpVersions } from "../version-bump.js";
 import { globalShip } from "./ship-workspace.js";
 const HELP = `${BIN_NAME} ship — for this repo and every submodule (recursively):
   init if missing, fast-forward pull if on a branch, then add + commit + push.
+  After the pull, directories the remote renamed/deleted whose only remaining
+  content is ignored build output (e.g. target/) are moved aside into
+  .git/chi-stale-dir-backup-<ts>/ so the tree matches the remote.
 
 In flow mode (.git/chi-flow present): commit, push -u origin <branch>, and on
 first call open a draft PR via gh.
@@ -77,6 +80,91 @@ function backupBlockingFiles(repoRoot, paths) {
     }
     return { backupDir, moved, failed };
 }
+/**
+ * After a pull that renamed or deleted tracked directories on the remote, git
+ * removes the *tracked* files but leaves any ignored/untracked leftovers
+ * (typically build output like `target/`, `dist/`) behind — so the old
+ * directory lingers on disk as a stale skeleton even though it's gone remote.
+ *
+ * Detect exactly those directories by diffing the pre-pull HEAD against the
+ * post-pull HEAD: a directory is stale iff the pull removed tracked content
+ * under it AND it now holds zero tracked files. Directories that were never
+ * tracked (node_modules, caches) never appear in the diff, so they're safe.
+ *
+ * Rather than delete, move each stale directory into
+ * .git/chi-stale-dir-backup-<ts>/ (preserving relative paths) so it stays
+ * recoverable — mirroring backupBlockingFiles' philosophy.
+ */
+function pruneStaleTrackedDirs(repoRoot, beforeSha, dry) {
+    if (!beforeSha)
+        return;
+    const afterSha = git(["-C", repoRoot, "rev-parse", "HEAD"]).stdout.trim();
+    if (!afterSha || afterSha === beforeSha)
+        return; // nothing pulled in
+    // Deleted tracked paths between the two commits. No -M, so a rename shows as
+    // delete(old)+add(new) and the old path is captured here.
+    const diff = git([
+        "-C", repoRoot, "diff", "--diff-filter=D", "--name-only", beforeSha, afterSha,
+    ]);
+    if (!diff.ok)
+        return;
+    const removed = diff.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (removed.length === 0)
+        return;
+    // Every ancestor directory of a removed path is a candidate.
+    const candidates = new Set();
+    for (const p of removed) {
+        let d = dirname(p);
+        while (d && d !== "." && d !== "/") {
+            candidates.add(d);
+            d = dirname(d);
+        }
+    }
+    // Stale iff still on disk AND no tracked files remain under it.
+    const stale = [];
+    for (const rel of candidates) {
+        if (!existsSync(join(repoRoot, rel)))
+            continue;
+        if (git(["-C", repoRoot, "ls-files", "--", rel]).stdout.trim())
+            continue;
+        stale.push(rel);
+    }
+    if (stale.length === 0)
+        return;
+    // Keep only top-most dirs — drop any nested under another stale dir.
+    const tops = stale
+        .filter((d) => !stale.some((o) => o !== d && d.startsWith(`${o}/`)))
+        .sort();
+    if (dry) {
+        for (const rel of tops) {
+            dryNote(`would move stale renamed/deleted dir aside: ${c.cyan(rel)}`);
+        }
+        return;
+    }
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const resolved = git(["-C", repoRoot, "rev-parse", "--absolute-git-dir"]);
+    const gitDirPath = resolved.ok ? resolved.stdout.trim() : join(repoRoot, ".git");
+    const backupDir = join(gitDirPath, `chi-stale-dir-backup-${ts}`);
+    const moved = [];
+    for (const rel of tops) {
+        const src = join(repoRoot, rel);
+        const dst = join(backupDir, rel);
+        try {
+            mkdirSync(dirname(dst), { recursive: true });
+            renameSync(src, dst);
+            moved.push(rel);
+        }
+        catch {
+            process.stderr.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} could not move stale dir ${c.cyan(rel)} ${c.dim("(leaving in place)")}\n`);
+        }
+    }
+    if (moved.length > 0) {
+        process.stdout.write(`${sym.ok} ${c.dim(`${BIN_NAME} ship:`)} moved ${c.yellow(`${moved.length}`)} stale renamed/deleted dir(s) aside → ${c.dim(backupDir.replace(/\\/g, "/"))}\n`);
+        for (const rel of moved) {
+            process.stdout.write(`  ${c.dim("-")} ${c.cyan(rel)}\n`);
+        }
+    }
+}
 export async function run(argv) {
     const rc = await shipImpl(argv);
     if (process.env.__CHI_NESTED !== "1" && !isDry()) {
@@ -137,6 +225,39 @@ function tryHealOrphanedSubmodule(repoRoot, smPath, smAbs) {
     return false;
 }
 /**
+ * Recover a submodule whose `update --init` failed because the parent pins a
+ * commit that no longer exists on the submodule's remote — the classic result
+ * of an upstream force-push/rebase that garbage-collected the pinned SHA. Git
+ * reports this as `not our ref <sha>`, `did not contain <sha>`, or "Direct
+ * fetching of that commit failed".
+ *
+ * The pinned commit is gone for good, so fetch and check out the remote
+ * tracking branch tip instead (`update --init --remote`). That leaves the
+ * submodule at a live commit; the recursive `ship` + parent commit that follow
+ * bump the gitlink to it and push, so the dead pin self-heals for every
+ * downstream clone rather than failing forever.
+ *
+ * Only acts on a genuine missing-object fetch failure — any other init error is
+ * left untouched so the caller can report it.
+ */
+function tryRecoverDeadPin(repoRoot, smPath, initStderr) {
+    const deadRef = /not our ref|did not contain|Direct fetching of that commit failed|no such remote ref|reference is not a tree|unadvertised object/i.test(initStderr);
+    if (!deadRef)
+        return false;
+    process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} pins a commit missing from its remote ${c.dim("(upstream force-push) — recovering to the remote branch tip")}\n`);
+    // Sync first in case the URL drifted too, then fetch the branch tip instead
+    // of the dead pinned SHA. --remote uses submodule.<name>.branch when set,
+    // else the remote's default branch.
+    git(["-C", repoRoot, "submodule", "sync", "--", smPath]);
+    const remote = git(["-C", repoRoot, "submodule", "update", "--init", "--remote", "--", smPath]);
+    if (remote.ok) {
+        process.stdout.write(`${sym.ok} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} ${c.green("recovered to remote branch tip")} ${c.dim("(pointer bump will be committed)")}\n`);
+        return true;
+    }
+    process.stderr.write(remote.stderr);
+    return false;
+}
+/**
  * Recurse `ship` into every submodule declared in .gitmodules, fast-forward
  * pulling each on a branch first so the parent commit can include any pointer
  * bumps the children produce. No-op when the repo has no .gitmodules.
@@ -163,12 +284,15 @@ async function shipSubmodules(repoRoot, dry) {
         }
         else {
             const init = git(["-C", repoRoot, "submodule", "update", "--init", "--", smPath]);
-            // An init failure is recoverable when it's caused by an orphaned git-dir
-            // (a dead gitlink left over from a dismantled superproject) — heal and
-            // retry once before giving up on this submodule.
-            if (!init.ok && !tryHealOrphanedSubmodule(repoRoot, smPath, smAbs)) {
+            // An init failure is recoverable in two known cases: an orphaned git-dir
+            // (a dead gitlink left over from a dismantled superproject), or a pinned
+            // commit that upstream force-push removed from the remote. Try each healer
+            // before giving up on this submodule.
+            if (!init.ok &&
+                !tryHealOrphanedSubmodule(repoRoot, smPath, smAbs) &&
+                !tryRecoverDeadPin(repoRoot, smPath, init.stderr)) {
                 failed.push(`${smPath} (init failed)`);
-                process.stderr.write(`chi ship: submodule update failed for '${smPath}' — skipping (continuing)\n`);
+                process.stderr.write(`${BIN_NAME} ship: submodule update failed for '${smPath}' — skipping (continuing)\n`);
                 continue;
             }
         }
@@ -189,7 +313,8 @@ async function shipSubmodules(repoRoot, dry) {
             process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} has a .git entry but is not a valid repo ${c.dim("(stale/orphaned gitlink) — skipping")}\n`);
             continue;
         }
-        // ff-pull on a branch only.
+        // ff-pull on a branch only — a detached HEAD has no upstream to pull
+        // from, and gets recovered by the recursive `ship` call below instead.
         if (git(["-C", smAbs, "symbolic-ref", "-q", "HEAD"]).ok) {
             if (dry) {
                 dryNote(`would pull --ff-only in ${c.cyan(smPath)}`);
@@ -200,9 +325,6 @@ async function shipSubmodules(repoRoot, dry) {
                     process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} pull failed in ${c.cyan(smPath)} ${c.dim("(continuing)")}\n`);
                 }
             }
-        }
-        else {
-            process.stdout.write(`${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} is in detached HEAD, ${c.dim("skipping pull")}\n`);
         }
         const subRc = await execInherit(process.execPath, [SELF_BIN, "ship"], {
             cwd: smAbs,
@@ -726,9 +848,13 @@ async function shipImpl(argv) {
     // Recurse first so the parent commit can include any pointer bumps the
     // children produced.
     await shipSubmodules(repoRoot, dry);
+    // Snapshot HEAD before the pull so we can detect directories the pull
+    // renamed/deleted on the remote and left as stale ignored skeletons.
+    const beforeSha = git(["-C", repoRoot, "rev-parse", "HEAD"]).stdout.trim();
     const syncRc = await syncMainRepo(repoRoot, dry);
     if (syncRc !== null)
         return syncRc;
+    pruneStaleTrackedDirs(repoRoot, beforeSha, dry);
     if (existsSync(marker)) {
         return shipFlow(repoRoot, marker, dry);
     }
