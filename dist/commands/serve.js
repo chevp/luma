@@ -34,7 +34,7 @@ function parseArgs(argv) {
     return args;
 }
 function helpText() {
-    return `${BIN_NAME} serve — start a local web console (chat UI over local ollama; remote cura is opt-in)
+    return `${BIN_NAME} serve — start a local web console (chat UI over local ollama)
 
 Usage: ${BIN_NAME} serve [--port <n>] [--host <h>] [--no-open]
 
@@ -47,17 +47,13 @@ Options:
 Environment:
   CHI_OLLAMA_URL    ollama base URL (default http://localhost:11434)
   CHI_OLLAMA_MODEL  pin a default ollama model (optional)
-  CHI_LLM_URL       remote provider base URL — set to enable cura
-  CHI_LLM_MODEL     pin a default remote model (optional)
-  BASIC_AUTH_USER   basic-auth user for the remote provider
-  BASIC_AUTH_PASSWORD  basic-auth password for the remote provider
 
 Routes (same-origin):
   GET  /             → static console UI
-  GET  /api/health   → { providers: { ollama, cura }, default }
+  GET  /api/health   → { providers: { ollama }, default }
   GET  /api/models   → { models: ModelEntry[], active: string }
-  POST /api/chat     → NDJSON stream from the chosen backend
-                      body: { model: "ollama/<name>" | "cura/<name>", messages, stream }
+  POST /api/chat     → NDJSON stream from local ollama
+                      body: { model: "ollama/<name>", messages, stream }
   POST /api/run      → run a chi tool (status | doctor | help | config)
 `;
 }
@@ -97,26 +93,8 @@ function sendJson(res, status, body) {
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(body));
 }
-// Cura is an opt-in remote provider — there is no built-in default URL or
-// model. Setting CHI_LLM_URL (and BASIC_AUTH_USER/PASSWORD) activates it.
-function curaUrlBase() {
-    const raw = process.env.CHI_LLM_URL?.trim();
-    if (!raw)
-        return null;
-    return raw.replace(/\/+$/, "");
-}
-function curaModel() {
-    return process.env.CHI_LLM_MODEL?.trim() ?? "";
-}
 function ollamaUrlBase() {
     return (process.env.CHI_OLLAMA_URL ?? OLLAMA_DEFAULT_URL).replace(/\/+$/, "");
-}
-function basicAuthHeader() {
-    const user = process.env.BASIC_AUTH_USER;
-    const password = process.env.BASIC_AUTH_PASSWORD;
-    if (!user || !password)
-        return null;
-    return "Basic " + Buffer.from(`${user}:${password}`).toString("base64");
 }
 async function fetchWithTimeout(url, init = {}) {
     const { timeoutMs = 4000, ...rest } = init;
@@ -144,71 +122,39 @@ async function listOllamaModels() {
         return [];
     }
 }
-async function listCuraModels() {
-    const url = curaUrlBase();
-    const auth = basicAuthHeader();
-    if (!url || !auth)
-        return [];
-    try {
-        const r = await fetchWithTimeout(`${url}/api/tags`, {
-            headers: { Authorization: auth },
-            timeoutMs: 5000,
-        });
-        if (!r.ok)
-            return [];
-        const data = (await r.json());
-        return (data.models ?? []).map((m) => m.name ?? "").filter(Boolean).sort();
-    }
-    catch {
-        return [];
-    }
-}
 function parseModelId(id) {
     const slash = id.indexOf("/");
     if (slash < 0)
         return null;
     const provider = id.slice(0, slash);
     const name = id.slice(slash + 1);
-    if ((provider !== "ollama" && provider !== "cura") || !name)
+    if (provider !== "ollama" || !name)
         return null;
     return { provider, name };
 }
 async function handleHealth(_req, res) {
-    const [ollamaModels, curaModels] = await Promise.all([listOllamaModels(), listCuraModels()]);
+    const ollamaModels = await listOllamaModels();
     const ollamaOk = ollamaModels.length > 0;
-    const curaOk = curaModels.length > 0;
-    const def = curaOk && !ollamaOk ? "cura" : "ollama";
     sendJson(res, 200, {
-        ok: ollamaOk || curaOk,
-        default: def,
+        ok: ollamaOk,
+        default: "ollama",
         providers: {
             ollama: { ok: ollamaOk, url: ollamaUrlBase(), models: ollamaModels.length },
-            cura: {
-                ok: curaOk,
-                url: curaUrlBase() ?? null,
-                configured: curaUrlBase() !== null,
-                models: curaModels.length,
-                auth: basicAuthHeader() !== null,
-            },
         },
     });
 }
 async function handleModels(_req, res) {
-    const [ollamaModels, curaModels] = await Promise.all([listOllamaModels(), listCuraModels()]);
-    const models = [
-        ...ollamaModels.map((name) => ({ id: `ollama/${name}`, provider: "ollama", name })),
-        ...curaModels.map((name) => ({ id: `cura/${name}`, provider: "cura", name })),
-    ];
+    const ollamaModels = await listOllamaModels();
+    const models = ollamaModels.map((name) => ({
+        id: `ollama/${name}`,
+        provider: "ollama",
+        name,
+    }));
     let active = null;
     if (ollamaModels.length > 0) {
         const pinned = process.env.CHI_OLLAMA_MODEL?.trim();
         const match = pinned && ollamaModels.find((n) => n === pinned || n.startsWith(`${pinned}:`));
         active = `ollama/${match ?? ollamaModels[0]}`;
-    }
-    else if (curaModels.length > 0) {
-        const want = curaModel();
-        const match = curaModels.find((n) => n === want || n.startsWith(`${want}:`)) ?? curaModels[0];
-        active = `cura/${match}`;
     }
     sendJson(res, 200, { models, active });
 }
@@ -223,48 +169,21 @@ async function handleChat(req, res) {
     }
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     const stream = payload.stream !== false;
-    let provider;
     let modelName;
     const parsed = payload.model ? parseModelId(payload.model) : null;
     if (parsed) {
-        provider = parsed.provider;
         modelName = parsed.name;
     }
-    else if (payload.provider === "ollama" || payload.provider === "cura") {
-        provider = payload.provider;
-        modelName = payload.model ?? "";
-    }
     else {
-        provider = "ollama";
         modelName = payload.model ?? "";
     }
     if (!modelName) {
         sendJson(res, 400, { error: "missing model name" });
         return;
     }
-    let url;
+    const provider = "ollama";
     const headers = { "Content-Type": "application/json" };
-    if (provider === "cura") {
-        const base = curaUrlBase();
-        if (!base) {
-            sendJson(res, 412, {
-                error: "CHI_LLM_URL not set — cura provider is opt-in; export CHI_LLM_URL to enable it",
-            });
-            return;
-        }
-        const auth = basicAuthHeader();
-        if (!auth) {
-            sendJson(res, 412, {
-                error: "BASIC_AUTH_USER / BASIC_AUTH_PASSWORD not set — run `chi init` first",
-            });
-            return;
-        }
-        headers["Authorization"] = auth;
-        url = `${base}/api/chat`;
-    }
-    else {
-        url = `${ollamaUrlBase()}/api/chat`;
-    }
+    const url = `${ollamaUrlBase()}/api/chat`;
     let upstream;
     try {
         upstream = await fetch(url, {

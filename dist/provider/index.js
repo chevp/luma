@@ -1,8 +1,4 @@
-import { curaProvider } from "./cura.js";
 import { ollamaProvider } from "./ollama.js";
-import { commandExists } from "../spawn.js";
-import { c } from "../ui.js";
-import { BIN_NAME } from "../identity.js";
 class Semaphore {
     slots;
     waiters = [];
@@ -34,56 +30,26 @@ function providerSemaphore() {
     providerSem = new Semaphore(slots);
     return providerSem;
 }
-let selected = null;
-let detection = null;
 /**
- * Picks the first reachable provider in priority order: local ollama → cura.
- * Cached for the lifetime of the process; concurrent callers share the same
- * in-flight detection promise.
+ * luma has a single generation backend: the local ollama daemon. These helpers
+ * stay as thin wrappers so call sites don't hard-code the provider (and a
+ * second backend could be reintroduced without touching every caller).
  */
-async function detect() {
-    if (selected)
-        return selected;
-    if (detection)
-        return detection;
-    detection = (async () => {
-        if (await ollamaProvider.ping()) {
-            selected = ollamaProvider;
-        }
-        else {
-            if (commandExists("ollama")) {
-                process.stderr.write(c.dim(`${BIN_NAME}: ollama installed but not running — start it with 'ollama serve' (falling back to cura)\n`));
-            }
-            selected = curaProvider;
-        }
-        return selected;
-    })();
-    return detection;
-}
 export function activeProviderName() {
-    return selected?.name ?? "cura";
+    return ollamaProvider.name;
 }
-export function getProvider(name) {
-    if (name === "ollama")
-        return ollamaProvider;
-    if (name === "cura")
-        return curaProvider;
-    return selected ?? curaProvider;
+export function getProvider(_name) {
+    return ollamaProvider;
 }
-/**
- * Selects the active provider (local ollama if reachable, otherwise cura)
- * and pings it. The selection is cached for the rest of the process.
- */
+/** Pings the local ollama daemon; caches the selected model on success. */
 export async function providerEnsureRunning() {
-    const p = await detect();
-    return p.ping();
+    return ollamaProvider.ping();
 }
 export async function providerSmartGenerate(prompt, _opts = {}) {
-    const p = await detect();
     const sem = providerSemaphore();
     await sem.acquire();
     try {
-        return await p.generate(prompt);
+        return await ollamaProvider.generate(prompt);
     }
     finally {
         sem.release();

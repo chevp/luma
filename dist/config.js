@@ -3,20 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 export const CHI_CONFIG_FILE = process.env.CHI_CONFIG_FILE ?? join(homedir(), ".chi", "config");
 const KEY_TO_ENV = {
-    llm_url: "CHI_LLM_URL",
-    llm_model: "CHI_LLM_MODEL",
     ollama_url: "CHI_OLLAMA_URL",
     ollama_model: "CHI_OLLAMA_MODEL",
-    basic_auth_user: "BASIC_AUTH_USER",
-    basic_auth_password: "BASIC_AUTH_PASSWORD",
     max_diff_chars: "CHI_MAX_DIFF_CHARS",
-    // Claude orchestrator (CTX-002). Loading these is unconditional; whether the
-    // key is *required* is decided at the first orchestrator query() call, not
-    // at boot — so commands like `chi status` / `chi commit` keep working when
-    // only cura credentials are set.
-    anthropic_api_key: "ANTHROPIC_API_KEY",
-    claude_model: "CHI_CLAUDE_MODEL",
-    claude_permission_mode: "CHI_CLAUDE_PERMISSION_MODE",
 };
 /**
  * Loads ~/.chi/config. Existing env vars win over the file (explicit env >

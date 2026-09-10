@@ -21,8 +21,7 @@ Usage:
 Where the log lives:
   <repo>/.git/chi-last-error.log   (one per repo)
 
-Uses the cura LLM endpoint (BASIC_AUTH_USER / BASIC_AUTH_PASSWORD required).
-Run '${BIN_NAME} doctor cura' to verify the endpoint is reachable.
+Uses the local ollama backend. Run '${BIN_NAME} doctor ollama' to verify it is reachable.
 `;
 
 type Mode = "explain" | "show" | "clear";

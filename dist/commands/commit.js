@@ -19,13 +19,7 @@ Options:
   -e, --edit      open editor to tweak the message before committing
   -h, --help      show this help
 
-Environment (required):
-  BASIC_AUTH_USER          basic-auth username for the cura endpoint
-  BASIC_AUTH_PASSWORD      basic-auth password for the cura endpoint
-
 Environment (optional):
-  CHI_LLM_URL              override default cura URL
-  CHI_LLM_MODEL            override default cura model (default: smollm2:135m)
   CHI_OLLAMA_URL           override default ollama URL (default: http://localhost:11434)
   CHI_OLLAMA_MODEL         pin a specific ollama model (skips auto-detection,
                            required when only embedding models are installed)

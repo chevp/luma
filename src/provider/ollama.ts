@@ -62,7 +62,7 @@ export const ollamaProvider: Provider = {
         cachedModel = pickGenerateModel(models);
       }
       // If only embedding models exist and the user hasn't pinned one,
-      // refuse to claim "reachable" so detection falls back to cura.
+      // report "not reachable" — there is no model that can generate text.
       return cachedModel !== null;
     } catch {
       return false;

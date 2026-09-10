@@ -24,7 +24,7 @@ Usage:
   ${BIN_NAME} issue [create] [description]    open a new issue (LLM drafts title/body)
   ${BIN_NAME} issue list [--limit N]          list open issues for the current repo
   ${BIN_NAME} issue close <n> [--reason R]    close issue #n
-  ${BIN_NAME} issue fix <n> [hint]            cut fix branch + start framework-driven Claude session
+  ${BIN_NAME} issue fix <n> [hint]            (unavailable — luma has no agentic backend)
   ${BIN_NAME} issue -h | --help               show this help
 `;
 
@@ -480,27 +480,17 @@ async function cmdFix(argv: string[]): Promise<number> {
   const parsed = parseFix(argv);
   if ("help" in parsed) {
     process.stdout.write(
-      `Usage: chi issue fix <issue-number> [hint...]
+      `Usage: ${BIN_NAME} issue fix <issue-number> [hint...]
 
-Cuts a parallel worktree at ../<repo>-issue-<N> on branch fix/issue-<N>,
-then starts a Claude session there that follows the chevp-ai-framework
-lifecycle (Context → Exploration → Production) with AskUserQuestion at
-every decision point. Multiple issues can be fixed in parallel — each
-gets its own worktree.
+Status: unavailable. This subcommand drove an interactive, framework-based
+agentic session, which required an LLM agent backend. luma is a local-only
+CLI with no agentic backend, so 'issue fix' is not available.
 
-Arguments:
-  <issue-number>   GitHub issue number to fix (required)
-  [hint...]        free-form additional context appended to the prompt
-
-Status: unavailable in cura-only mode — this subcommand requires the
-claude-code CLI for an interactive agentic session.
-
-After Claude exits, run \`chi ship\` and \`chi done\` from inside the
-worktree (\`chi done\` removes the worktree on merge).
-
-Examples:
-  chi issue fix 42
-  chi issue fix 42 "try cache invalidation first"
+Fix issues manually instead:
+  ${BIN_NAME} flow fix/issue-<N>   # cut a branch
+  ...make the change...
+  ${BIN_NAME} ship                 # commit + push + open PR
+  ${BIN_NAME} done                 # merge + return to base
 `,
     );
     return 0;
@@ -509,36 +499,10 @@ Examples:
     process.stderr.write(`${parsed.error}\n`);
     return 1;
   }
-  const opts = parsed;
 
-  if (!opts.num) {
-    process.stderr.write(`${BIN_NAME} issue fix: issue number required\n`);
-    return 1;
-  }
-  if (!/^\d+$/.test(opts.num)) {
-    process.stderr.write(`${BIN_NAME} issue fix: '${opts.num}' is not a valid issue number\n`);
-    return 1;
-  }
-
-  // R2: fail before the network call if a flow is already active.
-  if (!isInsideRepo()) {
-    process.stderr.write(`${BIN_NAME} issue fix: not a git repository\n`);
-    return 1;
-  }
-  const dir = gitDir();
-  if (dir && existsSync(join(dir, "chi-flow"))) {
-    process.stderr.write(
-      `${BIN_NAME} issue fix: a flow is already active — run '${BIN_NAME} done' first\n`,
-    );
-    return 1;
-  }
-
-  // chi issue fix needs an agentic CLI session (Claude Code). cura is plain
-  // text generation only, so this subcommand is unavailable in this build.
   process.stderr.write(
-    `${BIN_NAME} issue fix: not available in cura-only mode\n` +
-      "  this subcommand needs the claude-code CLI for an interactive\n" +
-      "  framework-driven session, which has been removed.\n",
+    `${BIN_NAME} issue fix: not available — luma has no agentic backend.\n` +
+      `  Fix the issue manually: '${BIN_NAME} flow fix/issue-<N>' → edit → '${BIN_NAME} ship' → '${BIN_NAME} done'.\n`,
   );
   return 1;
 }

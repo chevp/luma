@@ -1,5 +1,5 @@
 import { basename, dirname, join } from "node:path";
-import { existsSync, appendFileSync, mkdirSync, renameSync, rmSync, lstatSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, renameSync, rmSync, lstatSync, readFileSync } from "node:fs";
 import { commandExists, execInherit, execSync } from "../spawn.js";
 import { git, gitDir, isInsideRepo, pushWithRecovery } from "../git/index.js";
 import { resolveConflicts, finalizeRebase } from "../conflict.js";
@@ -847,6 +847,8 @@ async function shipImpl(argv) {
     const marker = join(dir, "chi-flow");
     // Recurse first so the parent commit can include any pointer bumps the
     // children produced.
+    const gmodPath = join(repoRoot, ".gitmodules");
+    const gmodBefore = existsSync(gmodPath) ? readFileSync(gmodPath, "utf8") : "";
     await shipSubmodules(repoRoot, dry);
     // Snapshot HEAD before the pull so we can detect directories the pull
     // renamed/deleted on the remote and left as stale ignored skeletons.
@@ -855,6 +857,14 @@ async function shipImpl(argv) {
     if (syncRc !== null)
         return syncRc;
     pruneStaleTrackedDirs(repoRoot, beforeSha, dry);
+    // The pull above can fast-forward in commits that registered new submodules
+    // (or repointed existing ones) — entries shipSubmodules(), having run before
+    // the pull, couldn't have seen yet. Re-run it so a single `ship` still ends
+    // with everything initialized instead of needing a second invocation.
+    const gmodAfter = existsSync(gmodPath) ? readFileSync(gmodPath, "utf8") : "";
+    if (gmodAfter !== gmodBefore) {
+        await shipSubmodules(repoRoot, dry);
+    }
     if (existsSync(marker)) {
         return shipFlow(repoRoot, marker, dry);
     }

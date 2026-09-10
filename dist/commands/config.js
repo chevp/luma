@@ -4,12 +4,8 @@ import { CHI_CONFIG_FILE } from "../config.js";
 import { execInherit } from "../spawn.js";
 import { BIN_NAME } from "../identity.js";
 const VALID_KEYS = [
-    "llm_url",
-    "llm_model",
     "ollama_url",
     "ollama_model",
-    "basic_auth_user",
-    "basic_auth_password",
     "max_diff_chars",
 ];
 const HELP = `${BIN_NAME} config — view or change persistent settings.
@@ -23,23 +19,18 @@ Usage:
   ${BIN_NAME} config path               print the config file path
 
 Keys:
-  llm_url               cura endpoint URL              (default: https://cura-llm-3j2fyuwcdq-oa.a.run.app)
-  llm_model             cura model name                (default: smollm2:135m)
   ollama_url            local ollama endpoint          (default: http://localhost:11434)
   ollama_model          local ollama model name        (default: first non-embedding model from 'ollama list')
-  basic_auth_user       cura basic-auth username       (REQUIRED)
-  basic_auth_password   cura basic-auth password       (REQUIRED)
   max_diff_chars        diff truncation length         (default: 8000)
 
 Examples:
-  ${BIN_NAME} config basic_auth_user my-user
-  ${BIN_NAME} config basic_auth_password my-secret
-  ${BIN_NAME} config llm_model smollm2:135m
+  ${BIN_NAME} config ollama_model qwen2.5:7b
+  ${BIN_NAME} config ollama_url http://localhost:11434
 
 Notes:
   Settings are saved to ${CHI_CONFIG_FILE}.
   Explicit env vars still win, so a one-off
-    BASIC_AUTH_USER=u BASIC_AUTH_PASSWORD=p ${BIN_NAME} commit
+    CHI_OLLAMA_MODEL=llama3.2 ${BIN_NAME} commit
   overrides whatever was saved here.
 `;
 function isValidKey(s) {
@@ -52,7 +43,6 @@ function validateValue(key, value) {
                 return `${BIN_NAME} config: max_diff_chars must be a positive integer`;
             }
             return null;
-        case "llm_url":
         case "ollama_url":
             if (!/^https?:\/\//.test(value)) {
                 return `${BIN_NAME} config: ${key} must start with http:// or https://`;

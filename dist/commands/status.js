@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import { CHI_OS } from "../platform.js";
 import { BIN_NAME, BIN_TAG } from "../identity.js";
 import { c, kv, line, section } from "../ui.js";
-import { activeProviderName, getProvider } from "../provider/index.js";
+import { activeProviderName, getProvider, providerEnsureRunning, } from "../provider/index.js";
 import { aheadBehind, currentBranch, git, isInsideRepo, porcelain, recentCommits, repoRoot, shortStatus, submoduleStatusRecursive, upstreamRef, } from "../git/index.js";
 import { commandExists, execSync } from "../spawn.js";
 import { parseFrontmatter, parseFrontmatterFile, statusBadge } from "../frontmatter.js";
@@ -288,17 +288,19 @@ export async function run(argv) {
     // ---- chi-cli ------------------------------------------------------------
     section(BIN_TAG);
     kv("platform", CHI_OS);
+    // Ping the local ollama backend and cache its selected model *before*
+    // reading the active provider, so status reports the model generation will
+    // actually use rather than the "(detecting)" placeholder.
+    const reachable = await providerEnsureRunning().catch(() => false);
     const provider = getProvider();
     kv("provider", `${activeProviderName()} ${c.dim(`(model: ${provider.activeModel()})`)}`);
-    const reachable = await provider.ping();
     kv("reachable", reachable
         ? c.green("yes")
         : `${c.red("no")} ${c.dim(`— run '${BIN_NAME} doctor provider'`)}`);
     const envSet = [];
     for (const v of [
-        "CHI_LLM_URL",
-        "CHI_LLM_MODEL",
-        "BASIC_AUTH_USER",
+        "CHI_OLLAMA_URL",
+        "CHI_OLLAMA_MODEL",
         "CHI_MAX_DIFF_CHARS",
     ]) {
         const val = process.env[v];

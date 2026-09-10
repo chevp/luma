@@ -1,8 +1,8 @@
-export type ProviderName = "ollama" | "cura";
+export type ProviderName = "ollama";
 
 export interface Provider {
   readonly name: ProviderName;
-  /** Display label for the active model (e.g. "smollm2:135m"). */
+  /** Display label for the active model (e.g. "qwen2.5:7b"). */
   activeModel(): string;
   /** True if the provider is reachable right now. Should be cheap and silent. */
   ping(): Promise<boolean>;

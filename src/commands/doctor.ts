@@ -6,7 +6,6 @@ import {
   providerEnsureRunning,
 } from "../provider/index.js";
 import { commandExists, execSync } from "../spawn.js";
-import { curaProvider } from "../provider/cura.js";
 import { ollamaProvider, isEmbedModel } from "../provider/ollama.js";
 import { BIN_NAME } from "../identity.js";
 
@@ -18,10 +17,8 @@ Targets:
   all          run all checks (default)
   git          git installation
   ollama       local ollama endpoint reachability + available models
-  cura         cura LLM endpoint reachability + configured model
-  claude       claude-agent orchestrator (ANTHROPIC_API_KEY presence)
   workflow     prerequisites for ${BIN_NAME} workflow / ${BIN_NAME} run (none — built-in)
-  provider     summary of the active provider (auto-selected: ollama → cura)
+  provider     summary of the active provider (local ollama)
 `;
 
 function ok(msg: string): void {
@@ -138,65 +135,8 @@ async function ollamaCheck(): Promise<boolean> {
   return true;
 }
 
-async function curaCheck(): Promise<boolean> {
-  let okAll = true;
-  const url = process.env.CHI_LLM_URL ?? "https://cura-llm-3j2fyuwcdq-oa.a.run.app";
-
-  if (process.env.BASIC_AUTH_USER && process.env.BASIC_AUTH_PASSWORD) {
-    ok("basic-auth credentials present (BASIC_AUTH_USER / BASIC_AUTH_PASSWORD)");
-  } else {
-    fail("BASIC_AUTH_USER and BASIC_AUTH_PASSWORD must be set");
-    info("export BASIC_AUTH_USER=<user>");
-    info("export BASIC_AUTH_PASSWORD=<password>");
-    info("or persist them in ~/.chi/config (basic_auth_user / basic_auth_password)");
-    return false;
-  }
-
-  if (await curaProvider.ping()) {
-    ok(`endpoint responding at ${url}`);
-  } else {
-    fail(`endpoint not reachable at ${url}`);
-    info("check network and credentials");
-    return false;
-  }
-
-  const model = curaProvider.activeModel();
-  if (await curaProvider.hasModel(model)) {
-    ok(`model available: ${model}`);
-  } else {
-    fail(`model not available: ${model}`);
-    info(`see ${url}/api/tags for the model list, then set CHI_LLM_MODEL`);
-    okAll = false;
-  }
-  return okAll;
-}
-
 function workflowCheck(): boolean {
   ok("workflow loader (built-in YAML parser, no extra deps)");
-  return true;
-}
-
-async function claudeCheck(): Promise<boolean> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    fail("ANTHROPIC_API_KEY not set");
-    info(`run: ${BIN_NAME} init --provider=claude`);
-    info("or: export ANTHROPIC_API_KEY=sk-ant-...");
-    return false;
-  }
-  ok("ANTHROPIC_API_KEY present");
-  // Lazy-load so users without the SDK installed (or without the dep mirrored
-  // in node_modules yet) still get a useful first message above. Per ADR-008
-  // §Decision rule 2 — the orchestrator dep is only paid for when needed.
-  try {
-    const mod = await import("../orchestrator/index.js");
-    const orchestrator = mod.getOrchestrator("claude-agent");
-    if (await orchestrator.ping()) ok("orchestrator loadable");
-    else fail("orchestrator ping failed");
-  } catch (err) {
-    fail(`orchestrator import failed: ${err instanceof Error ? err.message : String(err)}`);
-    info("did you run `npm install`? @anthropic-ai/claude-agent-sdk + xstate are required");
-    return false;
-  }
   return true;
 }
 
@@ -217,12 +157,6 @@ export async function run(argv: string[]): Promise<number> {
       return 0;
     case "ollama":
       await runSection("ollama", ollamaCheck);
-      return 0;
-    case "cura":
-      await runSection("cura", curaCheck);
-      return 0;
-    case "claude":
-      await runSection("claude", claudeCheck);
       return 0;
     case "provider": {
       await providerEnsureRunning().catch(() => false);
@@ -261,8 +195,6 @@ export async function run(argv: string[]): Promise<number> {
       process.stdout.write("\n");
       await runSection("git", gitCheck);
       await runSection("ollama", ollamaCheck);
-      await runSection("cura", curaCheck);
-      await runSection("claude", claudeCheck);
       await runSection("workflow", workflowCheck);
       process.stdout.write(`${c.bold("shell deps:")}\n`);
       for (const bin of ["curl", "bash"]) {
@@ -273,7 +205,7 @@ export async function run(argv: string[]): Promise<number> {
     }
     default:
       process.stderr.write(`chi doctor: unknown target '${target}'\n`);
-      process.stderr.write("valid: all, git, ollama, cura, claude, workflow, provider\n");
+      process.stderr.write("valid: all, git, ollama, workflow, provider\n");
       return 1;
   }
 }

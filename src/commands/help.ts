@@ -19,15 +19,10 @@ Commands:
   release [version]   create + push annotated vX.Y.Z tag (defaults to
                       ./package.json version); a 'on: push: tags' workflow
                       can then publish a GitHub Release
-  issue [sub] [args]  open / list / close / fix GitHub issues (AI-drafted body);
-                      '${n} issue [text]' is shorthand for '${n} issue create [text]';
-                      '${n} issue fix <n> [hint]' cuts a fix branch + starts a
-                      framework-driven Claude session (CTX → EXP → PRD)
-  explain [question]  ask the active LLM to diagnose the last ${n} ship/commit failure
+  issue [sub] [args]  open / list / close GitHub issues (AI-drafted body);
+                      '${n} issue [text]' is shorthand for '${n} issue create [text]'
+  explain [question]  ask local ollama to diagnose the last ${n} ship/commit failure
                       (read-only — prints a suggested command, never executes)
-  consult [question]  multi-turn AI consultation via the claude-agent orchestrator
-                      (defaults to read-only — Read/Glob/Grep + chi.* tools;
-                      add --write for Edit/Write, --dangerously-allow-bash for Bash)
   plan <sub> [args]   scaffold framework artifacts:
                       '${n} plan new <CTX|EXP|PRD|PROP|ADR> "<title>"'
                       '${n} plan list [<type>]'
@@ -40,14 +35,16 @@ Commands:
   update              update ${n} itself (workspace clone or global install)
   status              git status + ${BIN_TAG} config (provider, model, env)
   config [key] [val]  view or change persistent settings (~/.chi/config);
-                      e.g. '${n} config provider claude-code'
-  doctor [target]     verify deps and providers (git, gh, docker, ollama,
-                      claude-code, copilot, workflow)
+                      e.g. '${n} config ollama_model qwen2.5:7b'
+  doctor [target]     verify deps and providers (git, gh, ollama, workflow)
   repo [--fix]        diagnose repo hygiene (missing .gitignore, tracked build
                       artifacts, broken gitlinks); --fix applies fixes
   inspect             repo snapshot across the workspace (LOC, files, deps,
                       complexity, scale, public/private) — like git diff --stat
   serve [--port N]    start the local web console (chat UI over cura)
+  up [stack...]       start the workspace Docker stacks from .luma/stacks.json
+                      (each as its own compose project; --build, --attach)
+  down [stack...]     stop those stacks (-v also removes named volumes)
   help                show this message
 
 Run '${n} <command> --help' for command-specific options.
