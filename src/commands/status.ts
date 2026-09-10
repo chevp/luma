@@ -418,8 +418,10 @@ export async function run(argv: string[]): Promise<number> {
 
   const envSet: Array<[string, string]> = [];
   for (const v of [
+    "CHI_PROVIDER",
     "CHI_OLLAMA_URL",
     "CHI_OLLAMA_MODEL",
+    "CHI_CLAUDE_MODEL",
     "CHI_MAX_DIFF_CHARS",
   ]) {
     const val = process.env[v];

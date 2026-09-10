@@ -27,6 +27,8 @@ Commands:
                       '${n} plan new <CTX|EXP|PRD|PROP|ADR> "<title>"'
                       '${n} plan list [<type>]'
   init                provision local ollama (verify binary, start server, pull model)
+  login <provider>    authenticate an LLM provider (currently: claude — GitHub
+                      Copilot device flow); sets provider=claude on success
   run <name>          execute a workflow from .che/workflows/<name>.yml
                       (alias for: ${n} workflow run <name>)
   workflow <sub>      list / show / run workflows from .che/workflows/
@@ -36,7 +38,12 @@ Commands:
   status              git status + ${BIN_TAG} config (provider, model, env)
   config [key] [val]  view or change persistent settings (~/.chi/config);
                       e.g. '${n} config ollama_model qwen2.5:7b'
-  doctor [target]     verify deps and providers (git, gh, ollama, workflow)
+  doctor [target]     verify deps and providers (git, gh, ollama, claude, workflow,
+                      cmake, vulkan, java, android, blender, node, vscode)
+  setup [tool...]     install/upgrade the toolchain declared in
+                      .luma/toolchain.yml (--dry-run to preview)
+  fix [tool...]       repair only missing/broken tools from
+                      .luma/toolchain.yml (never forces version upgrades)
   repo [--fix]        diagnose repo hygiene (missing .gitignore, tracked build
                       artifacts, broken gitlinks); --fix applies fixes
   inspect             repo snapshot across the workspace (LOC, files, deps,

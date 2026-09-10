@@ -1,9 +1,16 @@
-import { c, sym } from "../ui.js";
+import { existsSync } from "node:fs";
+import { c } from "../ui.js";
 import { CHI_OS } from "../platform.js";
 import { activeProviderName, getProvider, providerEnsureRunning, } from "../provider/index.js";
 import { commandExists, execSync } from "../spawn.js";
 import { ollamaProvider, isEmbedModel } from "../provider/ollama.js";
+import { claudeProvider } from "../provider/claude.js";
 import { BIN_NAME } from "../identity.js";
+import { ok, fail, warn, info, runSection } from "../installers/report.js";
+import { INSTALLERS } from "../installers/registry.js";
+import { loadToolchainConfig, toolchainConfigPath } from "../toolchain.js";
+import { resolveWorkspaceRoot } from "../workspace.js";
+const TOOLCHAIN_TARGETS = ["cmake", "vulkan", "java", "android", "blender", "node", "vscode"];
 const HELP = `${BIN_NAME} doctor — verify dependencies and external services.
 
 Usage: ${BIN_NAME} doctor [target]
@@ -12,21 +19,12 @@ Targets:
   all          run all checks (default)
   git          git installation
   ollama       local ollama endpoint reachability + available models
+  claude       GitHub Copilot auth + Claude model reachability (see '${BIN_NAME} login claude')
   workflow     prerequisites for ${BIN_NAME} workflow / ${BIN_NAME} run (none — built-in)
-  provider     summary of the active provider (local ollama)
+  provider     summary of the active provider (ollama or claude)
+  cmake, vulkan, java, android, blender, node, vscode
+               individual toolchain checks (see .luma/toolchain.yml, ${BIN_NAME} setup)
 `;
-function ok(msg) {
-    process.stdout.write(`  ${sym.ok} ${msg}\n`);
-}
-function fail(msg) {
-    process.stdout.write(`  ${sym.err} ${c.red("error:")} ${msg}\n`);
-}
-function warn(msg) {
-    process.stdout.write(`  ${sym.warn} ${c.yellow("warn:")} ${msg}\n`);
-}
-function info(msg) {
-    process.stdout.write(`  ${c.dim("hint:")} ${c.dim(msg)}\n`);
-}
 function formatProviderSummary() {
     const name = activeProviderName();
     const model = getProvider().activeModel();
@@ -66,14 +64,14 @@ function ghInstallHint() {
     }
     info("docs:    https://cli.github.com/manual/");
 }
-function gitCheck() {
+async function gitCheck() {
     let okAll = true;
-    if (commandExists("git")) {
-        const ver = execSync("git", ["--version"]).stdout.trim().split(/\s+/)[2] ?? "?";
-        ok(`git ${ver}`);
+    const gitResult = await INSTALLERS.git.check(true);
+    if (gitResult.installed) {
+        ok(gitResult.detail);
     }
     else {
-        fail("git not installed");
+        fail(gitResult.detail);
         gitInstallHint();
         okAll = false;
     }
@@ -126,18 +124,77 @@ async function ollamaCheck() {
     }
     return true;
 }
+async function claudeCheck() {
+    const hasToken = Boolean(process.env.CHI_GITHUB_COPILOT_TOKEN?.trim());
+    if (!hasToken) {
+        info(`not configured — run: ${BIN_NAME} login claude`);
+        return true; // optional backend — absence is not a failure
+    }
+    if (!(await claudeProvider.ping())) {
+        fail("authenticated, but no Claude model reachable via GitHub Copilot");
+        info("check your Copilot subscription/model access, or re-run: " + `${BIN_NAME} login claude`);
+        return false;
+    }
+    ok(`reachable — model: ${c.cyan(claudeProvider.activeModel())}`);
+    return true;
+}
 function workflowCheck() {
     ok("workflow loader (built-in YAML parser, no extra deps)");
     return true;
 }
-async function runSection(name, fn) {
-    process.stdout.write(`${name}:\n`);
+async function toolchainCheck(id) {
+    const installer = INSTALLERS[id];
+    if (!installer)
+        return false;
+    const result = await installer.check(true);
+    if (result.installed) {
+        ok(result.detail);
+    }
+    else {
+        fail(result.detail);
+        for (const line of installer.hint(CHI_OS))
+            info(line);
+    }
+    return result.installed;
+}
+/** Manifest-driven drift check for `doctor all` — optional, silent if no manifest exists. */
+async function toolchainManifestSection() {
+    const workspaceRoot = resolveWorkspaceRoot().root;
+    if (!existsSync(toolchainConfigPath(workspaceRoot)))
+        return;
+    let config;
     try {
-        await fn();
+        config = loadToolchainConfig();
     }
     catch (err) {
-        fail(err instanceof Error ? err.message : String(err));
+        await runSection("toolchain manifest", () => {
+            fail(err instanceof Error ? err.message : String(err));
+            return false;
+        });
+        return;
     }
+    await runSection(`toolchain (${config.configPath})`, async () => {
+        let allOk = true;
+        for (const entry of config.entries) {
+            const installer = INSTALLERS[entry.id];
+            if (!installer) {
+                warn(`'${entry.id}' has no installer module yet`);
+                continue;
+            }
+            const result = await installer.check(entry.desired);
+            if (!result.installed) {
+                fail(result.detail);
+                allOk = false;
+            }
+            else if (!result.satisfies) {
+                warn(`${result.detail} (manifest wants ${entry.desired === true ? "latest" : entry.desired})`);
+            }
+            else {
+                ok(result.detail);
+            }
+        }
+        return allOk;
+    });
 }
 export async function run(argv) {
     const target = argv[0] ?? "all";
@@ -147,6 +204,18 @@ export async function run(argv) {
             return 0;
         case "ollama":
             await runSection("ollama", ollamaCheck);
+            return 0;
+        case "claude":
+            await runSection("claude", claudeCheck);
+            return 0;
+        case "cmake":
+        case "vulkan":
+        case "java":
+        case "android":
+        case "blender":
+        case "node":
+        case "vscode":
+            await runSection(target, () => toolchainCheck(target));
             return 0;
         case "provider": {
             await providerEnsureRunning().catch(() => false);
@@ -181,6 +250,7 @@ export async function run(argv) {
             process.stdout.write("\n");
             await runSection("git", gitCheck);
             await runSection("ollama", ollamaCheck);
+            await runSection("claude", claudeCheck);
             await runSection("workflow", workflowCheck);
             process.stdout.write(`${c.bold("shell deps:")}\n`);
             for (const bin of ["curl", "bash"]) {
@@ -189,11 +259,12 @@ export async function run(argv) {
                 else
                     fail(`${bin} missing`);
             }
+            await toolchainManifestSection();
             return 0;
         }
         default:
-            process.stderr.write(`chi doctor: unknown target '${target}'\n`);
-            process.stderr.write("valid: all, git, ollama, workflow, provider\n");
+            process.stderr.write(`${BIN_NAME} doctor: unknown target '${target}'\n`);
+            process.stderr.write(`valid: all, git, ollama, claude, workflow, provider, ${TOOLCHAIN_TARGETS.join(", ")}\n`);
             return 1;
     }
 }

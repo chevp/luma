@@ -1,4 +1,5 @@
 import { ollamaProvider } from "./ollama.js";
+import { claudeProvider } from "./claude.js";
 class Semaphore {
     slots;
     waiters = [];
@@ -31,25 +32,31 @@ function providerSemaphore() {
     return providerSem;
 }
 /**
- * luma has a single generation backend: the local ollama daemon. These helpers
- * stay as thin wrappers so call sites don't hard-code the provider (and a
- * second backend could be reintroduced without touching every caller).
+ * luma picks a generation backend via CHI_PROVIDER (persisted as `provider`
+ * in ~/.chi/config): "ollama" (default, local daemon) or "claude" (Claude
+ * models via a GitHub Copilot subscription — see `luma login claude`).
  */
+function resolveProviderName() {
+    return process.env.CHI_PROVIDER?.trim().toLowerCase() === "claude" ? "claude" : "ollama";
+}
+function providerFor(name) {
+    return name === "claude" ? claudeProvider : ollamaProvider;
+}
 export function activeProviderName() {
-    return ollamaProvider.name;
+    return resolveProviderName();
 }
-export function getProvider(_name) {
-    return ollamaProvider;
+export function getProvider(name) {
+    return providerFor(name ?? resolveProviderName());
 }
-/** Pings the local ollama daemon; caches the selected model on success. */
+/** Pings the active provider; caches the selected model on success. */
 export async function providerEnsureRunning() {
-    return ollamaProvider.ping();
+    return getProvider().ping();
 }
 export async function providerSmartGenerate(prompt, _opts = {}) {
     const sem = providerSemaphore();
     await sem.acquire();
     try {
-        return await ollamaProvider.generate(prompt);
+        return await getProvider().generate(prompt);
     }
     finally {
         sem.release();

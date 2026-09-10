@@ -6,6 +6,9 @@ const KEY_TO_ENV = {
     ollama_url: "CHI_OLLAMA_URL",
     ollama_model: "CHI_OLLAMA_MODEL",
     max_diff_chars: "CHI_MAX_DIFF_CHARS",
+    provider: "CHI_PROVIDER",
+    claude_model: "CHI_CLAUDE_MODEL",
+    github_copilot_token: "CHI_GITHUB_COPILOT_TOKEN",
 };
 /**
  * Loads ~/.chi/config. Existing env vars win over the file (explicit env >

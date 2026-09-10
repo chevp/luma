@@ -33,7 +33,8 @@ Options:
 `;
 const CONFIG_EXAMPLE = `{
   "stacks": [
-    { "name": "cura",   "repo": "misc/cura",  "file": "docker-compose.local.yml" },
+    { "name": "cura",   "repo": "misc/cura",  "file": "docker-compose.local.yml",
+      "env": { "OLLAMA_PORT": "11435" } },
     { "name": "kosmos", "repo": "apps/kosmos", "file": "docker-compose.yml" }
   ]
 }`;
@@ -75,7 +76,20 @@ function loadConfig() {
         if (seen.has(name))
             throw new Error(`${configPath}: duplicate stack name '${name}'`);
         seen.add(name);
-        stacks.push({ name, repo, file });
+        let env;
+        if (e?.env !== undefined) {
+            if (typeof e.env !== "object" || e.env === null || Array.isArray(e.env)) {
+                throw new Error(`${configPath}: stack '${name}' has an "env" that is not an object`);
+            }
+            env = {};
+            for (const [k, v] of Object.entries(e.env)) {
+                if (typeof v !== "string") {
+                    throw new Error(`${configPath}: stack '${name}' env '${k}' must be a string`);
+                }
+                env[k] = v;
+            }
+        }
+        stacks.push({ name, repo, file, env });
     });
     if (stacks.length === 0) {
         throw new Error(`${configPath}: "stacks" is empty — nothing to manage`);
@@ -165,8 +179,12 @@ async function execStacks(action, argv) {
             if (volumes)
                 composeArgs.push("-v");
         }
-        process.stdout.write(`${c.dim(`$ docker ${composeArgs.join(" ")}`)}\n`);
-        const code = await execInherit("docker", composeArgs);
+        const envPrefix = s.env
+            ? Object.entries(s.env).map(([k, v]) => `${k}=${v} `).join("")
+            : "";
+        process.stdout.write(`${c.dim(`$ ${envPrefix}docker ${composeArgs.join(" ")}`)}\n`);
+        const env = s.env ? { ...process.env, ...s.env } : process.env;
+        const code = await execInherit("docker", composeArgs, { env });
         if (code !== 0)
             failed.push({ name: s.name, code });
     }

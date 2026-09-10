@@ -1,6 +1,6 @@
 {
   "name": "luma",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Personal developer CLI — extended sibling of chi",
   "type": "module",
@@ -21,13 +21,16 @@
     "prepare": "node -e \"\"",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:exe": "node scripts/build-exe.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "esbuild": "^0.24.0",
+    "postject": "^1.0.0-alpha.6",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

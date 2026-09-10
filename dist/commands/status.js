@@ -299,8 +299,10 @@ export async function run(argv) {
         : `${c.red("no")} ${c.dim(`— run '${BIN_NAME} doctor provider'`)}`);
     const envSet = [];
     for (const v of [
+        "CHI_PROVIDER",
         "CHI_OLLAMA_URL",
         "CHI_OLLAMA_MODEL",
+        "CHI_CLAUDE_MODEL",
         "CHI_MAX_DIFF_CHARS",
     ]) {
         const val = process.env[v];

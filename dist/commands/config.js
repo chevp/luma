@@ -7,6 +7,9 @@ const VALID_KEYS = [
     "ollama_url",
     "ollama_model",
     "max_diff_chars",
+    "provider",
+    "claude_model",
+    "github_copilot_token",
 ];
 const HELP = `${BIN_NAME} config — view or change persistent settings.
 
@@ -22,10 +25,15 @@ Keys:
   ollama_url            local ollama endpoint          (default: http://localhost:11434)
   ollama_model          local ollama model name        (default: first non-embedding model from 'ollama list')
   max_diff_chars        diff truncation length         (default: 8000)
+  provider              active LLM backend             (ollama | claude, default: ollama)
+  claude_model          pin a Claude model id           (default: auto-detected from your Copilot plan)
+  github_copilot_token  GitHub token backing the claude provider (set by '${BIN_NAME} login claude', not meant to be typed by hand)
 
 Examples:
   ${BIN_NAME} config ollama_model qwen2.5:7b
   ${BIN_NAME} config ollama_url http://localhost:11434
+  ${BIN_NAME} config provider claude       # switch to Claude (run '${BIN_NAME} login claude' first)
+  ${BIN_NAME} config provider ollama       # switch back to the local ollama daemon
 
 Notes:
   Settings are saved to ${CHI_CONFIG_FILE}.
@@ -46,6 +54,11 @@ function validateValue(key, value) {
         case "ollama_url":
             if (!/^https?:\/\//.test(value)) {
                 return `${BIN_NAME} config: ${key} must start with http:// or https://`;
+            }
+            return null;
+        case "provider":
+            if (value !== "ollama" && value !== "claude") {
+                return `${BIN_NAME} config: provider must be 'ollama' or 'claude'`;
             }
             return null;
         default:

@@ -20,9 +20,19 @@ import * as serveCmd from "./commands/serve.js";
 import * as repoCmd from "./commands/repo.js";
 import * as inspectCmd from "./commands/inspect.js";
 import * as upCmd from "./commands/up.js";
+import * as setupCmd from "./commands/setup.js";
+import * as fixCmd from "./commands/fix.js";
+import * as loginCmd from "./commands/login.js";
 import { resolveTrigger } from "./workflow/loader.js";
+import { getCurrentVersion } from "./version-check.js";
 
 type CommandRunner = (argv: string[]) => Promise<number>;
+
+/** Print `<bin> <version>` (from package.json), or `(unknown)` if unresolved. */
+async function printVersion(): Promise<number> {
+  process.stdout.write(`${BIN_NAME} ${getCurrentVersion() ?? "(unknown)"}\n`);
+  return 0;
+}
 
 const COMMANDS: Record<string, CommandRunner> = {
   status: statusCmd.run,
@@ -46,17 +56,25 @@ const COMMANDS: Record<string, CommandRunner> = {
   inspect: inspectCmd.run,
   up: upCmd.run,
   down: upCmd.down,
+  setup: setupCmd.run,
+  fix: fixCmd.run,
+  login: loginCmd.run,
 
   help: helpCmd.run,
   "-h": helpCmd.run,
   "--help": helpCmd.run,
+  version: printVersion,
+  "-v": printVersion,
+  "--version": printVersion,
 };
 
 /**
  * Reserved commands skip the trigger lookup so workflows stay manageable even
  * if a user authors a `trigger: workflow` (footgun guard).
  */
-const RESERVED_FOR_TRIGGER = new Set(["help", "-h", "--help", "workflow", "run"]);
+const RESERVED_FOR_TRIGGER = new Set([
+  "help", "-h", "--help", "workflow", "run", "version", "-v", "--version",
+]);
 
 async function main(): Promise<number> {
   loadPersistedConfig();

@@ -287,31 +287,161 @@ function tryRecoverDeadPin(repoRoot: string, smPath: string, initStderr: string)
 }
 
 /**
- * Recurse `ship` into every submodule declared in .gitmodules, fast-forward
- * pulling each on a branch first so the parent commit can include any pointer
- * bumps the children produce. No-op when the repo has no .gitmodules.
+ * Resolve the branch a submodule should track so it can be advanced to the
+ * newest commit instead of staying pinned in detached HEAD.
+ *
+ * Precedence: an explicit `branch` in .gitmodules wins; otherwise the remote's
+ * default branch, read locally from origin/HEAD (populated once via
+ * `remote set-head` if unset). Returns null when neither can be determined.
+ */
+function resolveSubmoduleBranch(repoRoot: string, smName: string, smAbs: string): string | null {
+  // `.` is a special .gitmodules value ("track the superproject's branch") —
+  // treat it as unset and fall through to the remote default.
+  const configured = git(
+    ["-C", repoRoot, "config", "-f", ".gitmodules", "--get", `submodule.${smName}.branch`],
+  ).stdout.trim();
+  if (configured && configured !== ".") return configured;
+
+  const PREFIX = "refs/remotes/origin/";
+  const head = git(["-C", smAbs, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"]).stdout.trim();
+  if (head.startsWith(PREFIX)) return head.slice(PREFIX.length);
+
+  // origin/HEAD is often unset on submodule clones — populate it once.
+  if (git(["-C", smAbs, "remote", "set-head", "origin", "-a"]).ok) {
+    const head2 = git(["-C", smAbs, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"]).stdout.trim();
+    if (head2.startsWith(PREFIX)) return head2.slice(PREFIX.length);
+  }
+  return null;
+}
+
+/**
+ * Bring one submodule onto its tracking branch (re-attaching it if detached),
+ * then fast-forward it to the newest commit. Never throws — every failure is
+ * reported and swallowed so it can't abort the parent ship.
+ */
+function attachAndPullSubmodule(repoRoot: string, smPath: string, smName: string, smAbs: string): void {
+  if (!git(["-C", smAbs, "symbolic-ref", "-q", "HEAD"]).ok) {
+    // Detached HEAD (the default state after `submodule update`): re-attach to
+    // the tracking/default branch so this ship advances it to origin's latest
+    // rather than leaving it pinned to the recorded gitlink.
+    const branch = resolveSubmoduleBranch(repoRoot, smName, smAbs);
+    if (!branch) {
+      process.stdout.write(
+        `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} is in detached HEAD and no default branch could be resolved, ${c.dim("skipping pull")}\n`,
+      );
+      return;
+    }
+    if (!git(["-C", smAbs, "checkout", branch]).ok) {
+      process.stdout.write(
+        `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} detached — could not checkout ${c.cyan(branch)} ${c.dim("(skipping pull)")}\n`,
+      );
+      return;
+    }
+    process.stdout.write(
+      `${sym.ok} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} ${c.dim(`was detached → checked out ${branch}`)}\n`,
+    );
+  }
+
+  const ff = git(["-C", smAbs, "pull", "--ff-only", "--quiet"]);
+  if (!ff.ok) {
+    process.stdout.write(
+      `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} pull failed in ${c.cyan(smPath)} ${c.dim("(continuing)")}\n`,
+    );
+  }
+}
+
+/**
+ * A submodule this repo should ship into. `registered` distinguishes the two
+ * discovery sources: `.gitmodules` entries carry a URL and can be
+ * `submodule update --init`ed; bare index gitlinks (mode 160000 with no
+ * `.gitmodules` entry) cannot — they're already-embedded submodules we can only
+ * recurse into if they're checked out.
+ */
+interface SubmoduleEntry {
+  smPath: string;
+  smName: string;
+  registered: boolean;
+}
+
+/**
+ * Discover every submodule the parent should ship into, from BOTH sources:
+ *
+ *   1. `.gitmodules` entries — the normal, registered submodules (have a URL,
+ *      so they can be init'd/cloned).
+ *   2. Gitlinks present in the index (mode 160000) that have NO `.gitmodules`
+ *      entry — "embedded"/unregistered submodules. These are the trap: a ship
+ *      driven off `.gitmodules` alone never visits them, so their dirty working
+ *      trees leave the superproject permanently `-dirty` (exactly what happened
+ *      to `runtime/taveuni`). We can't `submodule update --init` them without a
+ *      URL, but if they're checked out we can still recurse `ship` to commit and
+ *      push their contents, then let the parent bump the pointer.
+ *
+ * Registered entries come first so they're init'd before the fallback scan.
+ */
+function discoverSubmodules(repoRoot: string): SubmoduleEntry[] {
+  const entries: SubmoduleEntry[] = [];
+  const seen = new Set<string>();
+
+  const gmodPath = join(repoRoot, ".gitmodules");
+  if (existsSync(gmodPath)) {
+    const cfg = git(
+      ["-C", repoRoot, "config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+    ).stdout;
+    for (const ln of cfg.split(/\r?\n/)) {
+      const trimmed = ln.trim();
+      if (!trimmed) continue;
+      const parts = trimmed.split(/\s+/, 2);
+      const smPath = parts[1];
+      if (!smPath) continue;
+      const smName = (parts[0] ?? "").slice("submodule.".length, -".path".length);
+      if (seen.has(smPath)) continue;
+      entries.push({ smPath, smName, registered: true });
+      seen.add(smPath);
+    }
+  }
+
+  // Bare gitlinks in the index with no .gitmodules entry. `ls-files -s` prints
+  // "<mode> <sha> <stage>\t<path>"; mode 160000 marks a gitlink.
+  const lsFiles = git(["-C", repoRoot, "ls-files", "-s"]).stdout;
+  for (const ln of lsFiles.split(/\r?\n/)) {
+    if (!ln.startsWith("160000")) continue;
+    const tab = ln.indexOf("\t");
+    if (tab < 0) continue;
+    const smPath = ln.slice(tab + 1).trim();
+    if (!smPath || seen.has(smPath)) continue;
+    // No .gitmodules entry → no name to key config off; use the path.
+    entries.push({ smPath, smName: smPath, registered: false });
+    seen.add(smPath);
+  }
+
+  return entries;
+}
+
+/**
+ * Recurse `ship` into every submodule — both those declared in .gitmodules and
+ * bare index gitlinks with no .gitmodules entry (embedded submodules) — advancing
+ * each to the newest commit on its tracking branch first (re-attaching detached
+ * submodules) so the parent commit can include any pointer bumps the children
+ * produce. No-op when the repo has neither.
  *
  * Submodule errors never abort the parent ship — they're collected and printed
  * at the end so a single bad submodule can't block the rest.
  */
 async function shipSubmodules(repoRoot: string, dry: boolean): Promise<void> {
-  const gmodPath = join(repoRoot, ".gitmodules");
-  if (!existsSync(gmodPath)) return;
+  const entries = discoverSubmodules(repoRoot);
+  if (entries.length === 0) return;
 
   const failed: string[] = [];
-  const cfg = git(
-    ["-C", repoRoot, "config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
-  ).stdout;
-  for (const ln of cfg.split(/\r?\n/)) {
-    const trimmed = ln.trim();
-    if (!trimmed) continue;
-    const smPath = trimmed.split(/\s+/, 2)[1];
-    if (!smPath) continue;
+  for (const { smPath, smName, registered } of entries) {
     const smAbs = join(repoRoot, smPath);
 
     if (dry) {
-      dryNote(`would init/update submodule ${c.cyan(smPath)}`);
-    } else {
+      dryNote(
+        registered
+          ? `would init/update submodule ${c.cyan(smPath)}`
+          : `would recurse ship into embedded submodule ${c.cyan(smPath)} ${c.dim("(unregistered gitlink)")}`,
+      );
+    } else if (registered) {
       const init = git(["-C", repoRoot, "submodule", "update", "--init", "--", smPath]);
       // An init failure is recoverable in two known cases: an orphaned git-dir
       // (a dead gitlink left over from a dismantled superproject), or a pinned
@@ -329,10 +459,17 @@ async function shipSubmodules(repoRoot: string, dry: boolean): Promise<void> {
         continue;
       }
     }
+    // Unregistered gitlinks skip init entirely — there's no URL to clone from.
+    // If checked out, the shared logic below still ships them; if not, the
+    // not-checked-out guard reports why we can't.
 
     if (!existsSync(join(smAbs, ".git"))) {
       if (dry) {
         dryNote(`submodule ${c.cyan(smPath)} not checked out — would recurse after init`);
+      } else if (!registered) {
+        process.stdout.write(
+          `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} ${c.cyan(smPath)} is an embedded gitlink not checked out and not in .gitmodules ${c.dim("(no URL to init from) — skipping")}\n`,
+        );
       }
       continue;
     }
@@ -351,19 +488,18 @@ async function shipSubmodules(repoRoot: string, dry: boolean): Promise<void> {
       continue;
     }
 
-    // ff-pull on a branch only — a detached HEAD has no upstream to pull
-    // from, and gets recovered by the recursive `ship` call below instead.
-    if (git(["-C", smAbs, "symbolic-ref", "-q", "HEAD"]).ok) {
-      if (dry) {
+    // Advance the submodule to the newest commit on its tracking branch,
+    // re-attaching it first if it's in detached HEAD.
+    if (dry) {
+      if (git(["-C", smAbs, "symbolic-ref", "-q", "HEAD"]).ok) {
         dryNote(`would pull --ff-only in ${c.cyan(smPath)}`);
       } else {
-        const ff = git(["-C", smAbs, "pull", "--ff-only", "--quiet"]);
-        if (!ff.ok) {
-          process.stdout.write(
-            `${sym.warn} ${c.dim(`${BIN_NAME} ship:`)} pull failed in ${c.cyan(smPath)} ${c.dim("(continuing)")}\n`,
-          );
-        }
+        dryNote(
+          `would re-attach detached ${c.cyan(smPath)} to its default branch + pull --ff-only`,
+        );
       }
+    } else {
+      attachAndPullSubmodule(repoRoot, smPath, smName, smAbs);
     }
 
     const subRc = await execInherit(process.execPath, [SELF_BIN, "ship"], {

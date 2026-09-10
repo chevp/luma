@@ -26,9 +26,12 @@ Options:
   -h, --help      show this help
 
 Environment (optional):
+  CHI_PROVIDER             active LLM backend: ollama (default) or claude
+                           (see '${BIN_NAME} login claude')
   CHI_OLLAMA_URL           override default ollama URL (default: http://localhost:11434)
   CHI_OLLAMA_MODEL         pin a specific ollama model (skips auto-detection,
                            required when only embedding models are installed)
+  CHI_CLAUDE_MODEL         pin a specific Claude model id (default: auto-detected)
   CHI_MAX_DIFF_CHARS       diff truncation (default: 8000)
 `;
 

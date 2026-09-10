@@ -20,10 +20,16 @@ import { resolveWorkspaceRoot } from "../workspace.js";
  * Config (`<workspace-root>/.luma/stacks.json`, override with LUMA_STACKS_FILE):
  *   {
  *     "stacks": [
- *       { "name": "cura",   "repo": "misc/cura",  "file": "docker-compose.local.yml" },
+ *       { "name": "cura",   "repo": "misc/cura",  "file": "docker-compose.local.yml",
+ *         "env": { "OLLAMA_PORT": "11435" } },
  *       { "name": "kosmos", "repo": "apps/kosmos", "file": "docker-compose.yml" }
  *     ]
  *   }
+ *
+ * Optional per-stack `env` is merged over the process environment for that
+ * stack's `docker compose` invocation only — used e.g. to move a published
+ * host port when a native service already owns it (cura's ollama vs a local
+ * ollama both wanting 11434).
  */
 
 interface Stack {
@@ -33,6 +39,8 @@ interface Stack {
   repo: string;
   /** Compose file relative to the repo. Defaults to docker-compose.yml. */
   file: string;
+  /** Extra env vars for this stack's compose invocation (merged over process env). */
+  env?: Record<string, string>;
 }
 
 const DEFAULT_FILE = "docker-compose.yml";
@@ -67,7 +75,8 @@ Options:
 
 const CONFIG_EXAMPLE = `{
   "stacks": [
-    { "name": "cura",   "repo": "misc/cura",  "file": "docker-compose.local.yml" },
+    { "name": "cura",   "repo": "misc/cura",  "file": "docker-compose.local.yml",
+      "env": { "OLLAMA_PORT": "11435" } },
     { "name": "kosmos", "repo": "apps/kosmos", "file": "docker-compose.yml" }
   ]
 }`;
@@ -118,7 +127,22 @@ function loadConfig(): LoadedConfig {
     if (!repo) throw new Error(`${configPath}: stack '${name}' is missing "repo"`);
     if (seen.has(name)) throw new Error(`${configPath}: duplicate stack name '${name}'`);
     seen.add(name);
-    stacks.push({ name, repo, file });
+
+    let env: Record<string, string> | undefined;
+    if (e?.env !== undefined) {
+      if (typeof e.env !== "object" || e.env === null || Array.isArray(e.env)) {
+        throw new Error(`${configPath}: stack '${name}' has an "env" that is not an object`);
+      }
+      env = {};
+      for (const [k, v] of Object.entries(e.env as Record<string, unknown>)) {
+        if (typeof v !== "string") {
+          throw new Error(`${configPath}: stack '${name}' env '${k}' must be a string`);
+        }
+        env[k] = v;
+      }
+    }
+
+    stacks.push({ name, repo, file, env });
   });
 
   if (stacks.length === 0) {
@@ -215,8 +239,12 @@ async function execStacks(action: "up" | "down", argv: string[]): Promise<number
       composeArgs.push("down");
       if (volumes) composeArgs.push("-v");
     }
-    process.stdout.write(`${c.dim(`$ docker ${composeArgs.join(" ")}`)}\n`);
-    const code = await execInherit("docker", composeArgs);
+    const envPrefix = s.env
+      ? Object.entries(s.env).map(([k, v]) => `${k}=${v} `).join("")
+      : "";
+    process.stdout.write(`${c.dim(`$ ${envPrefix}docker ${composeArgs.join(" ")}`)}\n`);
+    const env = s.env ? { ...process.env, ...s.env } : process.env;
+    const code = await execInherit("docker", composeArgs, { env });
     if (code !== 0) failed.push({ name: s.name, code });
   }
 
