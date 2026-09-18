@@ -61,7 +61,9 @@ export const claudeProvider = {
             if (models.length === 0)
                 return false;
             const pinned = pinnedModel();
-            cachedModel = pinned ? (models.find((m) => m === pinned) ?? pinned) : pickModel(models);
+            cachedModel = pinned
+                ? (models.find((m) => m === pinned) ?? pickModel(models))
+                : pickModel(models);
             return cachedModel !== null;
         }
         catch {
@@ -90,7 +92,9 @@ export const claudeProvider = {
                 throw new Error("claude: no Claude model available via GitHub Copilot (check your Copilot plan/model access)");
             }
             const pinned = pinnedModel();
-            cachedModel = pinned ? (models.find((m) => m === pinned) ?? pinned) : pickModel(models);
+            cachedModel = pinned
+                ? (models.find((m) => m === pinned) ?? pickModel(models))
+                : pickModel(models);
         }
         const r = await fetch(`${API_BASE}/chat/completions`, {
             method: "POST",
