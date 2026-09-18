@@ -14,7 +14,6 @@ import { git, isInsideRepo, gitDir } from "../git/index.js";
 import { parseFrontmatter, statusBadge } from "../frontmatter.js";
 import { withSpinner } from "../spinner.js";
 import { readLine, confirmYesNo } from "../prompt.js";
-import * as workflowCmd from "./workflow.js";
 import * as shipCmd from "./ship.js";
 import { createWorktree } from "./work.js";
 

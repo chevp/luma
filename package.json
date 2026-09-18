@@ -1,6 +1,6 @@
 {
   "name": "luma",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Personal developer CLI — extended sibling of chi",
   "type": "module",
@@ -10,7 +10,6 @@
   "files": [
     "bin",
     "dist",
-    ".che",
     "scripts",
     "context/prototypes/ux-console",
     "context/prototypes/ux-console-v2",

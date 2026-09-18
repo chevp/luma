@@ -23,22 +23,14 @@ Commands:
                       '${n} issue [text]' is shorthand for '${n} issue create [text]'
   explain [question]  ask local ollama to diagnose the last ${n} ship/commit failure
                       (read-only — prints a suggested command, never executes)
-  plan <sub> [args]   scaffold framework artifacts:
-                      '${n} plan new <CTX|EXP|PRD|PROP|ADR> "<title>"'
-                      '${n} plan list [<type>]'
   init                provision local ollama (verify binary, start server, pull model)
   login <provider>    authenticate an LLM provider (currently: claude — GitHub
                       Copilot device flow); sets provider=claude on success
-  run <name>          execute a workflow from .che/workflows/<name>.yml
-                      (alias for: ${n} workflow run <name>)
-  workflow <sub>      list / show / run workflows from .che/workflows/
-  <trigger> [args]    any workflow with 'trigger: <name>' in its YAML can be
-                      run as '${n} <name>' — shadows the built-ins above
   update              update ${n} itself (workspace clone or global install)
   status              git status + ${BIN_TAG} config (provider, model, env)
   config [key] [val]  view or change persistent settings (~/.chi/config);
                       e.g. '${n} config ollama_model qwen2.5:7b'
-  doctor [target]     verify deps and providers (git, gh, ollama, claude, workflow,
+  doctor [target]     verify deps and providers (git, gh, ollama, claude,
                       cmake, vulkan, java, android, blender, node, vscode)
   setup [tool...]     install/upgrade the toolchain declared in
                       .luma/toolchain.yml (--dry-run to preview)

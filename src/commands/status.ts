@@ -552,10 +552,8 @@ export async function run(argv: string[]): Promise<number> {
   // ---- plans --------------------------------------------------------------
   if (!short) {
     const plansDir = join(root, ".chi", "plans");
-    const altDir = join(root, ".che", "plans");
     let dirToUse = "";
     if (existsSync(plansDir) && statSync(plansDir).isDirectory()) dirToUse = plansDir;
-    else if (existsSync(altDir) && statSync(altDir).isDirectory()) dirToUse = altDir;
 
     if (dirToUse) {
       const entries = readdirSync(dirToUse).filter((e) => e.endsWith(".md") && e !== "README.md");

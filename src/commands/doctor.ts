@@ -26,7 +26,6 @@ Targets:
   git          git installation
   ollama       local ollama endpoint reachability + available models
   claude       GitHub Copilot auth + Claude model reachability (see '${BIN_NAME} login claude')
-  workflow     prerequisites for ${BIN_NAME} workflow / ${BIN_NAME} run (none — built-in)
   provider     summary of the active provider (ollama or claude)
   cmake, vulkan, java, android, blender, node, vscode
                individual toolchain checks (see .luma/toolchain.yml, ${BIN_NAME} setup)
@@ -87,7 +86,7 @@ async function gitCheck(): Promise<boolean> {
   if (commandExists("gh")) {
     const ver =
       execSync("gh", ["--version"]).stdout.split(/\r?\n/)[0]?.split(/\s+/)[2] ?? "?";
-    ok(`gh ${ver}  (required for chi flow / chi done)`);
+    ok(`gh ${ver}  (required for ${BIN_NAME} flow / ${BIN_NAME} done)`);
     if (execSync("gh", ["auth", "status"]).ok) {
       ok("gh authenticated");
     } else {
@@ -96,7 +95,7 @@ async function gitCheck(): Promise<boolean> {
       okAll = false;
     }
   } else {
-    fail("gh not installed  (required for chi flow / chi done)");
+    fail(`gh not installed  (required for ${BIN_NAME} flow / ${BIN_NAME} done)`);
     ghInstallHint();
     okAll = false;
   }
@@ -145,11 +144,6 @@ async function claudeCheck(): Promise<boolean> {
     return false;
   }
   ok(`reachable — model: ${c.cyan(claudeProvider.activeModel())}`);
-  return true;
-}
-
-function workflowCheck(): boolean {
-  ok("workflow loader (built-in YAML parser, no extra deps)");
   return true;
 }
 
@@ -238,9 +232,6 @@ export async function run(argv: string[]): Promise<number> {
       }
       return 0;
     }
-    case "workflow":
-      await runSection("workflow", workflowCheck);
-      return 0;
     case "-h":
     case "--help":
       process.stdout.write(HELP);
@@ -263,18 +254,12 @@ export async function run(argv: string[]): Promise<number> {
       await runSection("git", gitCheck);
       await runSection("ollama", ollamaCheck);
       await runSection("claude", claudeCheck);
-      await runSection("workflow", workflowCheck);
-      process.stdout.write(`${c.bold("shell deps:")}\n`);
-      for (const bin of ["curl", "bash"]) {
-        if (commandExists(bin)) ok(bin);
-        else fail(`${bin} missing`);
-      }
       await toolchainManifestSection();
       return 0;
     }
     default:
       process.stderr.write(`${BIN_NAME} doctor: unknown target '${target}'\n`);
-      process.stderr.write(`valid: all, git, ollama, claude, workflow, provider, ${TOOLCHAIN_TARGETS.join(", ")}\n`);
+      process.stderr.write(`valid: all, git, ollama, claude, provider, ${TOOLCHAIN_TARGETS.join(", ")}\n`);
       return 1;
   }
 }

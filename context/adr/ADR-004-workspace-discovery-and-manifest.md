@@ -159,7 +159,7 @@ contract. Conflating them would force one to compromise.
 ### Alternative B (manifest): TOML or YAML
 - Pros: standard, extensible (room for per-repo flags later).
 - Cons: TOML needs a parser dep (violates ADR-003); YAML reuses chi's minimal
-  parser but the workflow YAML parser is intentionally tiny and not designed
+  parser but that parser is intentionally tiny and not designed
   for arbitrary mappings. Reject in favor of the line format.
 
 ### Alternative C (manifest): infer mapping from existing folder layout (no manifest)

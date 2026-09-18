@@ -58,7 +58,7 @@ narrow `dependencies` slot for the orchestration SDK. ADR-008 opens a
    below the orchestrator's public boundary, so commands that do not
    touch orchestration (`status`, `commit`, `ship`, `flow`, `done`,
    `issue`, `explain`, `init` without `--provider=claude`, `update`,
-   `config`, `doctor` without the `claude` subcheck, `workflow`, `run`,
+   `config`, `doctor` without the `claude` subcheck,
    `work`, `release`) pay zero cold-start cost.
 3. The state machine is **scoped to the orchestrator** for v1 (per
    user choice 2026-05-11). Existing commands stay imperative. Lifting

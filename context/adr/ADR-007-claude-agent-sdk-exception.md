@@ -131,8 +131,7 @@ SDKs. Specifically:
 - chi gains a first-class agent runtime without owning ~2 kLoC of
   security-sensitive code.
 - Existing commands (`status`, `commit`, `ship`, `flow`, `done`,
-  `issue`, `explain`, `init`, `update`, `config`, `doctor`, `workflow`,
-  `run`) keep ADR-003's properties: zero load-time cost from the new
+  `issue`, `explain`, `init`, `update`, `config`, `doctor`) keep ADR-003's properties: zero load-time cost from the new
   dep, no new transitive surface unless they reach into the
   orchestrator.
 - The `Provider` interface stays untouched — `cura` and `ollama`

@@ -1,6 +1,5 @@
 /**
- * Minimal YAML parser for chi workflow files. Supports the subset needed by
- * `chi workflow {list, show, run}` — see `.che/workflows/*.yml`:
+ * Minimal YAML parser for `.luma/toolchain.yml`. Supports the subset needed:
  *
  *   - top-level keys with scalar values (string, int, bool, null)
  *   - nested maps via two-space indentation

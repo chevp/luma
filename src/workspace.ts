@@ -88,23 +88,6 @@ export interface WorkspaceRoot {
   root: string;
 }
 
-/**
- * Walk up from `cwd` until we find a `.git` directory. Falls back to `cwd`
- * if nothing matches. Used by per-repo commands like `chi plan` whose targets
- * (context/plans, context/adr) are repo-local — never workspace-wide.
- */
-export function resolveRepoRoot(cwd: string = process.cwd()): string {
-  const { root: fsRoot } = parse(cwd);
-  let current = cwd;
-  while (true) {
-    if (isRepo(current)) return current;
-    if (current === fsRoot) return cwd;
-    const parent = dirname(current);
-    if (parent === current) return cwd;
-    current = parent;
-  }
-}
-
 const WORKSPACE_MARKERS = [/chevp-workflow/i, /Workspace Mode/i];
 
 function looksLikeWorkspaceRoot(dir: string): boolean {

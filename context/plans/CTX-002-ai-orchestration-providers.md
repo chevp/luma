@@ -188,7 +188,7 @@ the cwd that gets handed to the Agent SDK (`options.cwd`).
   - `claude-agent.ts` — wraps `query()` from the Agent SDK, surfaces
     assistant messages and `tool_use` events.
   - `ask-user.ts` — readline-based terminal Q&A; pluggable via
-    `AskUserHandler` so workflow YAML or tests can stub it.
+    `AskUserHandler` so tests can stub it.
   - `index.ts` — `getOrchestrator(name?)` picker.
 - **New commands** (registered in [src/index.ts](../../src/index.ts)):
   - `chi consult [<question>] [--agent <name>] [--write] [--dangerously-allow-bash]`
@@ -507,7 +507,7 @@ Remaining defaults — confirmed by user 2026-05-11 (awaiting formal
 | 5 | Default model | `claude-opus-4-7` | `CHI_CLAUDE_MODEL` env / `--model` flag |
 | 6 | Where does workspace-root detection live? | New `src/workspace.ts` | Could move to `src/git/` later if it grows |
 | 7 | Custom tool prefix | `chi.*` (e.g. `chi.ask_user`, `chi.plan.create`) | Matches Claude Code's `mcp__<server>__<tool>` shape conceptually |
-| 8 | When does `ANTHROPIC_API_KEY` become a hard requirement? | **Only when invoking a claude-agent-backed command** (`chi consult`, `chi plan new`, future `chi gate`/`chi approve`). All pre-existing commands (`status`, `commit`, `ship`, `flow`, `done`, `issue`, `explain`, `init` without `--provider=claude`, `update`, `config`, `doctor` without the `claude` subcheck, `workflow`, `run`, `work`, `release`) must continue to function with **only** `BASIC_AUTH_USER`/`BASIC_AUTH_PASSWORD` set, exactly as today. Failure mode for the new commands when the key is missing: exit non-zero with `chi consult: ANTHROPIC_API_KEY is not set — run \`chi init --provider=claude\` or export the env var`. | — |
+| 8 | When does `ANTHROPIC_API_KEY` become a hard requirement? | **Only when invoking a claude-agent-backed command** (`chi consult`, `chi plan new`, future `chi gate`/`chi approve`). All pre-existing commands (`status`, `commit`, `ship`, `flow`, `done`, `issue`, `explain`, `init` without `--provider=claude`, `update`, `config`, `doctor` without the `claude` subcheck, `work`, `release`) must continue to function with **only** `BASIC_AUTH_USER`/`BASIC_AUTH_PASSWORD` set, exactly as today. Failure mode for the new commands when the key is missing: exit non-zero with `chi consult: ANTHROPIC_API_KEY is not set — run \`chi init --provider=claude\` or export the env var`. | — |
 
 **Implementation guard for #8** (mirrored as an acceptance criterion):
 the key check lives inside `src/orchestrator/claude-agent.ts` at the

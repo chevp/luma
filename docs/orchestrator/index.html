@@ -19,7 +19,6 @@
       <div class="nav-label">Guide</div>
       <a href="index.html" class="active">Overview</a>
       <a href="consult.html">chi consult</a>
-      <a href="plan.html">chi plan</a>
       <a href="architecture.html">Architecture</a>
       <div class="nav-label">Reference</div>
       <a href="../../context/plans/CTX-002-ai-orchestration-providers.md">CTX-002 (plan)</a>
@@ -52,7 +51,6 @@
       <thead><tr><th>Command</th><th>Purpose</th></tr></thead>
       <tbody>
         <tr><td><code>chi consult</code></td><td>Multi-turn AI session with workspace tools (Read/Glob/Grep + chi.* tools, optional Edit/Write/Bash).</td></tr>
-        <tr><td><code>chi plan</code></td><td>Scaffold &amp; list framework artifacts (CTX/EXP/PRD/PROP/ADR).</td></tr>
         <tr><td><code>chi init --provider=claude</code></td><td>Persist <code>ANTHROPIC_API_KEY</code> to <code>~/.chi/config</code>.</td></tr>
         <tr><td><code>chi doctor claude</code></td><td>Verify the orchestrator is loadable and the API key is set.</td></tr>
       </tbody>
@@ -144,7 +142,6 @@ npm link        # makes `chi` available on PATH</code></pre>
         <tr><td><code>src/orchestrator/claude-agent.ts</code></td><td>Facade — assembles options, starts the actor, exposes the Snapshot stream.</td></tr>
         <tr><td><code>src/orchestrator/tools/</code></td><td>In-process MCP tools: <code>ask_user</code>, <code>plan_create</code>, <code>plan_list</code>.</td></tr>
         <tr><td><code>src/commands/consult.ts</code></td><td>The <code>chi consult</code> command.</td></tr>
-        <tr><td><code>src/commands/plan.ts</code></td><td>The <code>chi plan</code> command.</td></tr>
       </tbody>
     </table>
 

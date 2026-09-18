@@ -1,6 +1,6 @@
 // Agents — mirrored from chevp-ai-framework/agents/*.md frontmatter.
 // Each entry keeps the framework's declared `tools:` list verbatim so the
-// "extended tooling" view in the sidebar / workflow stays in sync.
+// "extended tooling" view in the sidebar stays in sync.
 
 export const AGENTS = [
     {

@@ -24,7 +24,7 @@ Three repositories historically shipped overlapping developer CLIs:
 - `jan-cli` — variant of the same CLI.
 - `chi` (this repo) — TypeScript port of `che-cli` with the full command
   set (status, commit, ship, flow, done, issue, explain, init, update,
-  config, doctor, workflow, run).
+  config, doctor).
 
 Every improvement made to `chi` (e.g. the new `chi update` summary with
 old → new version + commit-range listing) had to be re-implemented in

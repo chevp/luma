@@ -5,7 +5,6 @@ import { store } from "./lib/store.js";
 import { apiHealth, apiModels, friendlyFetchError } from "./lib/api.js";
 import "./components/chi-sidebar.js";
 import "./components/chi-conversation.js";
-import "./components/chi-workflow.js";
 
 async function bootstrap() {
     store.setConnection("idle", "checking…");

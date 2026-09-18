@@ -4,7 +4,7 @@
 
 `luma` is a Node.js / TypeScript port of [che-cli](https://github.com/chevp/che-cli) — a small developer CLI that wraps git workflows and AI provider calls (Claude Code, Copilot, Ollama). Same UX as `che`, no runtime dependencies, hand-rolled command dispatch.
 
-Status: Full command-set ported (status, commit, ship, flow, done, issue, explain, init, update, config, doctor, workflow, run). Workspace additions: `up`/`down` (Docker stacks via `.luma/stacks.json` allowlist). Deferred work tracked as `PROP-NNN` proposals under [context/plans/proposals/](context/plans/proposals/) — see [README.md](README.md) for the full porting matrix.
+Status: Full command-set ported (status, commit, ship, flow, done, issue, explain, init, update, config, doctor). Workspace additions: `up`/`down` (Docker stacks via `.luma/stacks.json` allowlist). Deferred work tracked as `PROP-NNN` proposals under [context/plans/proposals/](context/plans/proposals/) — see [README.md](README.md) for the full porting matrix.
 
 ## Arlumatecture
 

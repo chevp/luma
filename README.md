@@ -118,7 +118,7 @@ luma issue close 42 --reason "fixed in #45"
 ```sh
 luma explain                                # diagnose the last failed luma ship/commit
 luma explain "why is git push hanging?"     # ad-hoc question, current git state included
-luma doctor                                 # all checks (git, cura, workflow)
+luma doctor                                 # all checks (git, cura)
 luma doctor cura                            # only the cura endpoint check
 ```
 
@@ -133,11 +133,9 @@ luma config edit                           # open ~/.luma/config in $EDITOR
 luma config path                           # print the config file path
 ```
 
-### Workflows and worktrees
+### Worktrees
 
 ```sh
-luma workflow list                       # list .che/workflows/*.yml
-luma run <name>                          # alias for `luma workflow run <name>`
 luma work <branch-name>                  # parallel git worktree (branch luma/<name>)
 luma work list | rm <name> | cd <name>
 ```

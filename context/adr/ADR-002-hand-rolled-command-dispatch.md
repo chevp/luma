@@ -16,7 +16,7 @@ Accepted.
 
 ## Context
 
-`chi` exposes a small set of subcommands (`status`, `commit`, `ship`, `flow`, `done`, `issue`, `explain`, `init`, `workflow`, `reinstall`, `config`, `doctor`, `help`). Most are simple verb-style commands with shallow flag surfaces; the project also commits to **zero runtime dependencies** (see ADR-003). A heavy CLI framework would either pull in dependencies or add complexity disproportionate to the surface area.
+`chi` exposes a small set of subcommands (`status`, `commit`, `ship`, `flow`, `done`, `issue`, `explain`, `init`, `reinstall`, `config`, `doctor`, `help`). Most are simple verb-style commands with shallow flag surfaces; the project also commits to **zero runtime dependencies** (see ADR-003). A heavy CLI framework would either pull in dependencies or add complexity disproportionate to the surface area.
 
 ## Decision
 

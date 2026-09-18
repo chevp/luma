@@ -4,7 +4,6 @@
 const STORAGE_SESSIONS = "chi.console3.sessions";
 const STORAGE_ACTIVE = "chi.console3.activeId";
 const STORAGE_VIEW = "chi.console3.view";
-const STORAGE_WORKFLOW = "chi.console3.workflowId";
 
 function lsGet(key, fallback) {
     try {
@@ -48,7 +47,6 @@ class Store {
             busy: false,
             currentRequest: null,
             view: lsGet(STORAGE_VIEW, "chat"),
-            workflowId: lsGet(STORAGE_WORKFLOW, "chevp-ai-framework"),
         };
         if (this.state.sessions.length === 0) {
             const s = newSessionObject();
@@ -198,13 +196,6 @@ class Store {
         this.state.view = view;
         lsSet(STORAGE_VIEW, view);
         this.emit("view", view);
-    }
-
-    setWorkflow(id) {
-        if (this.state.workflowId === id) return;
-        this.state.workflowId = id;
-        lsSet(STORAGE_WORKFLOW, id);
-        this.emit("workflow", id);
     }
 }
 
