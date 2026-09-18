@@ -74,7 +74,9 @@ export const claudeProvider: Provider = {
       const models = await listClaudeModels();
       if (models.length === 0) return false;
       const pinned = pinnedModel();
-      cachedModel = pinned ? (models.find((m) => m === pinned) ?? pinned) : pickModel(models);
+      cachedModel = pinned
+        ? (models.find((m) => m === pinned) ?? pickModel(models))
+        : pickModel(models);
       return cachedModel !== null;
     } catch {
       return false;
@@ -104,7 +106,9 @@ export const claudeProvider: Provider = {
         );
       }
       const pinned = pinnedModel();
-      cachedModel = pinned ? (models.find((m) => m === pinned) ?? pinned) : pickModel(models);
+      cachedModel = pinned
+        ? (models.find((m) => m === pinned) ?? pickModel(models))
+        : pickModel(models);
     }
 
     const r = await fetch(`${API_BASE}/chat/completions`, {
