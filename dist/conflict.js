@@ -9,6 +9,8 @@ const MENU_KEYS = ["a", "o", "t", "e", "r", "s", "q"];
 const MENU_PROMPT = `  ${c.bold("[a]")}ccept  ${c.bold("[o]")}urs  ${c.bold("[t]")}heirs  ${c.bold("[e]")}dit  ${c.bold("[r]")}etry+hint  ${c.bold("[s]")}kip  ${c.bold("[q]")}uit\n  > `;
 const CLAUDE_TIMEOUT_MS = 60_000;
 const MAX_FILE_SIZE = 200_000; // skip files larger than ~200KB
+const MAX_HUNKS = 25; // fall back to whole-file mode above this
+const CONTEXT_LINES = 8; // lines of surrounding context sent with each hunk
 /**
  * Attempt AI-assisted conflict resolution for all conflicted files in an
  * active rebase. Called from `chi ship` when rebase produces conflicts.
@@ -60,7 +62,7 @@ export async function resolveConflicts(repoRoot) {
             continue;
         }
         // Initial AI resolution attempt
-        let proposal = await invokeClaudeResolve(content, commitLog, repoRoot);
+        let proposal = await invokeClaudeResolve(content, commitLog, relPath);
         if (proposal === null) {
             process.stderr.write(c.dim("  (claude returned no resolution — skipping)\n"));
             skipped++;
@@ -104,7 +106,7 @@ export async function resolveConflicts(repoRoot) {
                 case "r": { // retry with hint
                     process.stdout.write("  hint: ");
                     const hint = await readLine();
-                    const retried = await invokeClaudeResolve(content, commitLog, repoRoot, hint);
+                    const retried = await invokeClaudeResolve(content, commitLog, relPath, hint);
                     if (retried === null) {
                         process.stderr.write(c.dim("  (claude returned no resolution)\n"));
                     }
@@ -157,17 +159,155 @@ export function finalizeRebase(repoRoot, result) {
     process.stderr.write(c.green(`chi ship: all ${result.resolved} conflict(s) resolved, rebase complete\n`));
     return 0;
 }
-// --- internals ---
-async function invokeClaudeResolve(conflictedContent, commitLog, _repoRoot, hint) {
-    const prompt = buildPrompt(conflictedContent, commitLog, hint);
-    const result = execSync("claude", ["-p", prompt], { timeoutMs: CLAUDE_TIMEOUT_MS });
-    if (!result.ok || !result.stdout.trim())
+/**
+ * Split a conflicted file into alternating text and conflict-hunk segments
+ * by walking its <<<<<<</=======/>>>>>>> (and optional |||||||) markers.
+ * Returns null if the markers are malformed/nested — caller falls back to
+ * whole-file resolution in that case.
+ */
+function parseConflictSegments(content) {
+    const lines = content.split("\n");
+    const segments = [];
+    let mode = "text";
+    let textBuf = [];
+    let oursBuf = [];
+    let baseBuf = [];
+    let theirsBuf = [];
+    let oursLabel = "";
+    let theirsLabel = "";
+    let hasBase = false;
+    for (const line of lines) {
+        if (mode === "text" && line.startsWith("<<<<<<< ")) {
+            segments.push({ kind: "text", lines: textBuf });
+            textBuf = [];
+            oursBuf = [];
+            baseBuf = [];
+            theirsBuf = [];
+            hasBase = false;
+            oursLabel = line.slice("<<<<<<< ".length);
+            mode = "ours";
+        }
+        else if (mode === "ours" && line.startsWith("||||||| ")) {
+            hasBase = true;
+            mode = "base";
+        }
+        else if ((mode === "ours" || mode === "base") && line === "=======") {
+            mode = "theirs";
+        }
+        else if (mode === "theirs" && line.startsWith(">>>>>>> ")) {
+            theirsLabel = line.slice(">>>>>>> ".length);
+            segments.push({
+                kind: "conflict",
+                oursLabel,
+                ours: oursBuf,
+                base: hasBase ? baseBuf : null,
+                theirsLabel,
+                theirs: theirsBuf,
+            });
+            textBuf = [];
+            mode = "text";
+        }
+        else if (mode === "text") {
+            textBuf.push(line);
+        }
+        else if (mode === "ours") {
+            oursBuf.push(line);
+        }
+        else if (mode === "base") {
+            baseBuf.push(line);
+        }
+        else {
+            theirsBuf.push(line);
+        }
+    }
+    if (mode !== "text")
+        return null; // unterminated conflict marker — malformed
+    segments.push({ kind: "text", lines: textBuf });
+    const hunkCount = segments.filter((s) => s.kind === "conflict").length;
+    if (hunkCount === 0)
         return null;
-    return result.stdout;
+    return segments;
 }
-function buildPrompt(content, commitLog, hint) {
-    let p = "You are resolving a git merge conflict. Output ONLY the resolved file content — " +
-        "no explanations, no markdown fences, no commentary. The file with conflict markers:\n\n" +
+function contextBefore(segments, conflictIndex) {
+    const prev = segments[conflictIndex - 1];
+    if (!prev || prev.kind !== "text")
+        return [];
+    return prev.lines.slice(-CONTEXT_LINES);
+}
+function contextAfter(segments, conflictIndex) {
+    const next = segments[conflictIndex + 1];
+    if (!next || next.kind !== "text")
+        return [];
+    return next.lines.slice(0, CONTEXT_LINES);
+}
+async function invokeClaudeResolve(conflictedContent, commitLog, relPath, hint) {
+    const segments = parseConflictSegments(conflictedContent);
+    const hunkCount = segments?.filter((s) => s.kind === "conflict").length ?? 0;
+    if (!segments || hunkCount > MAX_HUNKS) {
+        // Malformed markers or too many hunks to resolve individually — whole file.
+        const prompt = buildWholeFilePrompt(conflictedContent, commitLog, relPath, hint);
+        const result = execSync("claude", ["-p", prompt], { timeoutMs: CLAUDE_TIMEOUT_MS });
+        if (!result.ok || !result.stdout.trim())
+            return null;
+        const resolved = result.stdout.replace(/\n$/, "");
+        if (/^(<<<<<<<|=======|>>>>>>>)/m.test(resolved))
+            return null;
+        return resolved;
+    }
+    const outLines = [];
+    let hunkNum = 0;
+    for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        if (seg.kind === "text") {
+            outLines.push(...seg.lines);
+            continue;
+        }
+        hunkNum++;
+        if (hunkCount > 1) {
+            process.stderr.write(c.dim(`  resolving hunk ${hunkNum}/${hunkCount}...\n`));
+        }
+        const prompt = buildHunkPrompt(seg, contextBefore(segments, i), contextAfter(segments, i), commitLog, relPath, hint);
+        const result = execSync("claude", ["-p", prompt], { timeoutMs: CLAUDE_TIMEOUT_MS });
+        if (!result.ok || !result.stdout.trim())
+            return null;
+        const resolved = result.stdout.replace(/\n$/, "");
+        if (/^(<<<<<<<|=======|>>>>>>>)/m.test(resolved)) {
+            // Claude echoed markers back instead of resolving — treat as failure.
+            return null;
+        }
+        outLines.push(...resolved.split("\n"));
+    }
+    return outLines.join("\n");
+}
+function buildHunkPrompt(hunk, before, after, commitLog, relPath, hint) {
+    let p = `You are resolving ONE git merge conflict hunk inside ${relPath}. ` +
+        "Output ONLY the replacement code for this hunk — no conflict markers, no explanations, " +
+        "no markdown fences, no commentary, and no surrounding context lines (those are shown only " +
+        "for orientation and must not be repeated in your output). " +
+        "Combine or pick between the two sides as appropriate; do not rewrite or invent code beyond " +
+        "what is needed to resolve this specific hunk.\n\n";
+    if (before.length) {
+        p += "Context immediately before the hunk:\n" + before.join("\n") + "\n\n";
+    }
+    p += `Our side (${hunk.oursLabel}):\n${hunk.ours.join("\n")}\n\n`;
+    if (hunk.base) {
+        p += `Common ancestor:\n${hunk.base.join("\n")}\n\n`;
+    }
+    p += `Their side (${hunk.theirsLabel}):\n${hunk.theirs.join("\n")}\n\n`;
+    if (after.length) {
+        p += "Context immediately after the hunk:\n" + after.join("\n") + "\n\n";
+    }
+    p += "Recent commits being rebased:\n" + commitLog;
+    if (hint) {
+        p += `\n\nUser hint for resolution: ${hint}`;
+    }
+    return p;
+}
+function buildWholeFilePrompt(content, commitLog, relPath, hint) {
+    let p = `You are resolving git merge conflicts in ${relPath}. Output ONLY the resolved file content — ` +
+        "no explanations, no markdown fences, no commentary. Preserve every line outside the conflict " +
+        "markers exactly as-is; only decide the content within each <<<<<<< / ======= / >>>>>>> block. " +
+        "The file with conflict markers:\n\n" +
         content +
         "\n\nRecent commits being rebased:\n" +
         commitLog;
