@@ -1,6 +1,6 @@
 {
   "name": "luma",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "description": "Personal developer CLI — extended sibling of chi",
   "type": "module",
