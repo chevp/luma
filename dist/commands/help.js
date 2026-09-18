@@ -51,6 +51,8 @@ Commands:
   up [stack...]       start the workspace Docker stacks from .luma/stacks.json
                       (each as its own compose project; --build, --attach)
   down [stack...]     stop those stacks (-v also removes named volumes)
+  secrets [options]   push a dotenv file as GitHub Actions secrets across the
+                      repos in .chi-workspace ('${n} secrets --help' for options)
   help                show this message
 
 Run '${n} <command> --help' for command-specific options.

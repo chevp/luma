@@ -23,6 +23,7 @@ import * as upCmd from "./commands/up.js";
 import * as setupCmd from "./commands/setup.js";
 import * as fixCmd from "./commands/fix.js";
 import * as loginCmd from "./commands/login.js";
+import * as secretsCmd from "./commands/secrets.js";
 import { resolveTrigger } from "./workflow/loader.js";
 import { getCurrentVersion } from "./version-check.js";
 /** Print `<bin> <version>` (from package.json), or `(unknown)` if unresolved. */
@@ -55,6 +56,7 @@ const COMMANDS = {
     setup: setupCmd.run,
     fix: fixCmd.run,
     login: loginCmd.run,
+    secrets: secretsCmd.run,
     help: helpCmd.run,
     "-h": helpCmd.run,
     "--help": helpCmd.run,
