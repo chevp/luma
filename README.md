@@ -113,6 +113,16 @@ luma issue close 42 --reason "fixed in #45"
 
 `luma issue fix <n>` is **not available** — it required an interactive Claude CLI session that no longer exists in cura-only mode.
 
+### Release
+
+```sh
+luma release --dry-run        # checks + plan, writes nothing
+luma release                  # LLM picks patch/minor/major, bumps, tags, pushes
+luma release minor --gh-release --asset <installer>
+```
+
+Bumps every tracked `package.json`, `Cargo.toml` and `tauri.conf.json` at the shared version, checks the number (semver, above the last tag, no gaps, commits since the tag) and asks the local LLM whether the level fits the commits and diff. A repo's own `.claude/skills/*release*/SKILL.md` is passed to the LLM as its release rules. See `luma release --help`.
+
 ### Diagnostics
 
 ```sh

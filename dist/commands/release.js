@@ -1,270 +1,231 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { commandExists } from "../spawn.js";
+import { commandExists, execInherit } from "../spawn.js";
 import { git, isInsideRepo, repoRoot, currentBranch, porcelain, upstreamRef } from "../git/index.js";
 import { BIN_NAME } from "../identity.js";
-import { c } from "../ui.js";
-const HELP = `${BIN_NAME} release — bump the version, commit, tag, and push.
+import { c, sym } from "../ui.js";
+import { confirmYesNo } from "../prompt.js";
+import { nextSemver } from "../version-bump.js";
+import { deterministicChecks, lastTag, levelBetween, llmReview, releaseSkill } from "../release/check.js";
+import { listVersionFiles, primaryVersion, syncCargoLock, writeVersions } from "../release/versions.js";
+const HELP = `${BIN_NAME} release — bump versions, check plausibility, commit, tag, push, optionally publish.
 
 Usage:
-  ${BIN_NAME} release                  bump patch, commit, tag vX.Y.Z, push
+  ${BIN_NAME} release                     let the LLM pick patch/minor/major (fallback: patch)
   ${BIN_NAME} release patch|minor|major   bump that level
-  ${BIN_NAME} release X.Y.Z            set package.json to that exact version
-  ${BIN_NAME} release --no-bump        tag the current package.json version as-is
+  ${BIN_NAME} release X.Y.Z               set exactly that version
+  ${BIN_NAME} release --no-bump           tag the version the files already carry
 
-The bump commit message is "release vX.Y.Z". The tag is annotated with the
-same string (override with --message). After pushing, a configured CI workflow
-(on: push: tags: ['v*']) can publish a GitHub Release.
+Version files: every tracked package.json, Cargo.toml ([package] / [workspace.package])
+and tauri.conf.json at the shared version is bumped together; files at another
+version are reported and left alone. Cargo.lock is kept in step.
+
+Checks before anything is written:
+  - the version is semver, higher than the last tag, and without gaps
+  - there are commits since the last tag
+  - the local LLM (ollama, or the configured provider) judges the level from the
+    commits and diff since the last tag, using the repo's own
+    .claude/skills/*release*/SKILL.md when present; a mismatch asks for confirmation
 
 Options:
-  -m, --message <msg>   tag annotation message (default: the version)
-      --no-bump         skip the version bump; tag whatever is in package.json
+  -m, --message <msg>   tag annotation message (default: the tag)
+      --no-bump         skip the version bump
       --no-push         do everything locally; don't push commit or tag
+      --no-llm          skip the LLM check (deterministic checks still run)
+      --gh-release      after the push, create the GitHub Release with gh
+      --asset <path>    file attached to the GitHub Release (repeatable)
+      --draft           create the GitHub Release as draft
+      --dry-run         run the checks and print the plan, write nothing
+  -y, --yes             don't ask for confirmation
       --remote <name>   remote to push to (default: origin)
   -h, --help            show this help
 `;
+const FLAGS = {
+    "--no-bump": (a) => { a.noBump = true; },
+    "--no-push": (a) => { a.push = false; },
+    "--no-llm": (a) => { a.noLlm = true; },
+    "--gh-release": (a) => { a.ghRelease = true; },
+    "--draft": (a) => { a.draft = true; },
+    "--dry-run": (a) => { a.dry = true; },
+    "--dry": (a) => { a.dry = true; },
+    "-y": (a) => { a.yes = true; },
+    "--yes": (a) => { a.yes = true; },
+};
 function parseArgs(argv) {
     const out = {
-        version: null,
-        level: null,
-        noBump: false,
-        message: null,
-        push: true,
-        remote: "origin",
+        version: null, level: null, noBump: false, noLlm: false, dry: false, yes: false,
+        ghRelease: false, draft: false, assets: [], message: null, push: true, remote: "origin",
     };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i] ?? "";
         if (a === "-h" || a === "--help")
             return { error: "__help__" };
-        if (a === "-m" || a === "--message") {
+        const flag = FLAGS[a];
+        if (flag) {
+            flag(out);
+            continue;
+        }
+        if (a === "-m" || a === "--message" || a === "--asset" || a === "--remote") {
             const v = argv[++i];
             if (!v)
                 return { error: `${a} needs a value` };
-            out.message = v;
-            continue;
-        }
-        if (a === "--no-bump") {
-            out.noBump = true;
-            continue;
-        }
-        if (a === "--no-push") {
-            out.push = false;
-            continue;
-        }
-        if (a === "--remote") {
-            const v = argv[++i];
-            if (!v)
-                return { error: `--remote needs a value` };
-            out.remote = v;
+            if (a === "--asset")
+                out.assets.push(v);
+            else if (a === "--remote")
+                out.remote = v;
+            else
+                out.message = v;
             continue;
         }
         if (a.startsWith("-"))
             return { error: `unknown option '${a}'` };
-        if (out.version !== null || out.level !== null) {
+        if (out.version !== null || out.level !== null)
             return { error: `unexpected argument '${a}'` };
-        }
-        if (a === "patch" || a === "minor" || a === "major") {
+        if (a === "patch" || a === "minor" || a === "major")
             out.level = a;
-        }
-        else {
-            out.version = a;
-        }
+        else
+            out.version = a.replace(/^v/i, "");
     }
     return out;
 }
-/** Increment a semver string by the given level. Returns null if unparseable. */
-function nextSemver(version, level) {
-    const m = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(version);
-    if (!m)
-        return null;
-    const major = Number.parseInt(m[1] ?? "0", 10);
-    const minor = Number.parseInt(m[2] ?? "0", 10);
-    const patch = Number.parseInt(m[3] ?? "0", 10);
-    const suffix = m[4] ?? "";
-    if (level === "major")
-        return `${major + 1}.0.0${suffix}`;
-    if (level === "minor")
-        return `${major}.${minor + 1}.0${suffix}`;
-    return `${major}.${minor}.${patch + 1}${suffix}`;
-}
-/**
- * Write `version` into <root>/package.json, preserving the file's existing
- * indent and trailing newline. Returns the previous version, or null if the
- * file doesn't exist or has no string version field.
- */
-function writePackageVersion(root, version) {
-    const path = join(root, "package.json");
-    if (!existsSync(path))
-        return null;
-    let raw;
-    try {
-        raw = readFileSync(path, "utf8");
-    }
-    catch {
-        return null;
-    }
-    let pkg;
-    try {
-        pkg = JSON.parse(raw);
-    }
-    catch {
-        return null;
-    }
-    if (typeof pkg.version !== "string")
-        return null;
-    const previous = pkg.version;
-    const indent = /\n([ \t]+)"/.exec(raw)?.[1] ?? "  ";
-    const trailing = raw.endsWith("\n") ? "\n" : "";
-    pkg.version = version;
-    writeFileSync(path, JSON.stringify(pkg, null, indent) + trailing);
-    return previous;
-}
-function readPackageVersion(root) {
-    const path = join(root, "package.json");
-    if (!existsSync(path))
-        return null;
-    try {
-        const json = JSON.parse(readFileSync(path, "utf8"));
-        return typeof json.version === "string" && json.version.length > 0 ? json.version : null;
-    }
-    catch {
-        return null;
-    }
-}
-function normalizeTag(input) {
-    const stripped = input.startsWith("v") || input.startsWith("V") ? input.slice(1) : input;
-    // semver-ish: X.Y.Z with optional -prerelease and +build
-    if (!/^\d+\.\d+\.\d+([.\-+][0-9A-Za-z.\-+]+)?$/.test(stripped))
-        return null;
-    return `v${stripped}`;
+function fail(msg) {
+    process.stderr.write(`${BIN_NAME} release: ${msg}\n`);
+    return 1;
 }
 export async function run(argv) {
-    const parsed = parseArgs(argv);
-    if ("error" in parsed) {
-        if (parsed.error === "__help__") {
+    const args = parseArgs(argv);
+    if ("error" in args) {
+        if (args.error === "__help__") {
             process.stdout.write(HELP);
             return 0;
         }
-        process.stderr.write(`${BIN_NAME} release: ${parsed.error}\n`);
-        return 1;
+        return fail(args.error);
     }
-    if (!commandExists("git")) {
-        process.stderr.write(`${BIN_NAME} release: missing dependency: git\n`);
-        return 1;
-    }
-    if (!isInsideRepo()) {
-        process.stderr.write(`${BIN_NAME} release: not a git repository\n`);
-        return 1;
-    }
+    if (!commandExists("git"))
+        return fail("missing dependency: git");
+    if (!isInsideRepo())
+        return fail("not a git repository");
+    if (args.ghRelease && !commandExists("gh"))
+        return fail("--gh-release needs the gh CLI");
     const root = repoRoot();
-    const currentVersion = readPackageVersion(root);
-    // Decide the target version. Priority:
-    //   1. explicit X.Y.Z arg
-    //   2. patch|minor|major (or no arg, defaults to patch) → bump from package.json
-    //   3. --no-bump → use package.json as-is
-    let targetVersion;
-    if (parsed.version) {
-        targetVersion = parsed.version;
+    const files = listVersionFiles(root);
+    const primary = primaryVersion(files);
+    const previousTag = lastTag(root);
+    const skill = releaseSkill(root);
+    const sinceTag = previousTag ? Number.parseInt(git(["rev-list", "--count", `${previousTag}..HEAD`], root).stdout.trim(), 10) : null;
+    if (!primary && !args.version) {
+        return fail(`no version in package.json/Cargo.toml/tauri.conf.json — supply one (${BIN_NAME} release X.Y.Z)`);
     }
-    else if (parsed.noBump) {
-        targetVersion = currentVersion;
+    // In auto mode the LLM's level is the choice; for what the user chose it only reviews.
+    let target;
+    let level = args.level;
+    let llmNote = "";
+    if (args.version) {
+        target = args.version;
+    }
+    else if (args.noBump) {
+        target = primary;
     }
     else {
-        if (!currentVersion) {
-            process.stderr.write(`${BIN_NAME} release: no version in package.json — supply one (${BIN_NAME} release X.Y.Z)\n`);
-            return 1;
+        if (!level) {
+            const auto = args.noLlm ? null : await llmReview(root, previousTag, null, skill);
+            level = auto?.level ?? "patch";
+            if (auto && level === "major" && primary?.startsWith("0."))
+                level = "minor";
+            llmNote = auto ? `${level} — ${auto.reason}` : "";
+            if (!auto)
+                process.stdout.write(`${sym.warn} no LLM answer, defaulting to patch\n`);
         }
-        const level = parsed.level ?? "patch";
-        const next = nextSemver(currentVersion, level);
-        if (!next) {
-            process.stderr.write(`${BIN_NAME} release: current version '${currentVersion}' is not parseable semver\n`);
-            return 1;
+        const next = nextSemver(primary, level);
+        if (!next)
+            return fail(`current version '${primary}' is not parseable semver`);
+        target = next;
+    }
+    const tag = `v${target}`;
+    const checks = deterministicChecks({ target, previousTag, files, primary, commitsSinceTag: sinceTag });
+    const chosenLevel = primary ? levelBetween(primary, target) : null;
+    let mismatch = false;
+    if (!args.noLlm && !llmNote && chosenLevel && !args.noBump) {
+        const review = await llmReview(root, previousTag, target, skill);
+        if (review && review.level !== chosenLevel) {
+            mismatch = true;
+            checks.warnings.push(`LLM suggests ${review.level} instead of ${chosenLevel}: ${review.reason}`);
         }
-        targetVersion = next;
+        else if (review) {
+            process.stdout.write(`${sym.ok} LLM agrees with ${chosenLevel}${review.reason ? c.dim(` — ${review.reason}`) : ""}\n`);
+        }
+        else {
+            process.stdout.write(`${sym.warn} ${c.dim("LLM check unavailable, skipped")}\n`);
+        }
     }
-    if (!targetVersion) {
-        process.stderr.write(`${BIN_NAME} release: no version supplied and no package.json/version found\n` +
-            `usage: ${BIN_NAME} release <patch|minor|major|X.Y.Z>\n`);
+    if (llmNote)
+        process.stdout.write(`${sym.ok} LLM level: ${llmNote}\n`);
+    for (const w of checks.warnings)
+        process.stdout.write(`${sym.warn} ${c.yellow(w)}\n`);
+    for (const e of checks.errors)
+        process.stdout.write(`${sym.err} ${c.red(e)}\n`);
+    if (checks.errors.length)
         return 1;
-    }
-    const tag = normalizeTag(targetVersion);
-    if (!tag) {
-        process.stderr.write(`${BIN_NAME} release: '${targetVersion}' is not a valid semver version (expected X.Y.Z)\n`);
-        return 1;
-    }
-    const exists = git(["rev-parse", "--verify", "--quiet", `refs/tags/${tag}`]).ok;
-    if (exists) {
-        process.stderr.write(`${BIN_NAME} release: tag ${tag} already exists\n`);
-        return 1;
-    }
+    if (git(["rev-parse", "--verify", "--quiet", `refs/tags/${tag}`]).ok)
+        return fail(`tag ${tag} already exists`);
     const counts = porcelain();
     if (counts.total > 0) {
-        process.stderr.write(`${BIN_NAME} release: working tree has uncommitted changes ` +
-            `(${counts.staged} staged · ${counts.unstaged} unstaged · ${counts.untracked} untracked)\n` +
-            `commit or stash them before tagging\n`);
-        return 1;
+        return fail(`working tree has uncommitted changes (${counts.staged} staged · ${counts.unstaged} unstaged · ${counts.untracked} untracked)\ncommit or stash them before tagging`);
     }
     const branch = currentBranch();
-    const message = parsed.message ?? tag;
-    // Bump phase: write package.json + commit. Skipped when --no-bump, or when
-    // the file already has the target version (e.g. `luma release X.Y.Z` and
-    // X.Y.Z matches what's on disk).
-    const needsBump = !parsed.noBump && currentVersion !== null && currentVersion !== targetVersion;
-    if (needsBump) {
-        const previous = writePackageVersion(root, targetVersion);
-        if (previous === null) {
-            process.stderr.write(`${BIN_NAME} release: failed to write package.json — aborting before tag\n`);
-            return 1;
-        }
-        const add = git(["add", "--", "package.json"]);
-        if (!add.ok) {
-            process.stderr.write(add.stderr || `failed to stage package.json\n`);
-            return add.status ?? 1;
-        }
-        const commit = git(["commit", "-m", `release ${tag}`]);
-        if (!commit.ok) {
-            process.stderr.write(commit.stderr || `failed to commit version bump\n`);
-            return commit.status ?? 1;
-        }
-        process.stdout.write(`${c.green("✓")} bumped package.json ${c.dim(`${previous} →`)} ${c.green(targetVersion)}\n`);
-    }
-    const tagRes = git(["tag", "-a", tag, "-m", message]);
-    if (!tagRes.ok) {
-        process.stderr.write(tagRes.stderr || `failed to create tag ${tag}\n`);
-        return tagRes.status ?? 1;
-    }
-    process.stdout.write(`${c.green("✓")} created annotated tag ${c.cyan(tag)} on ${branch}\n`);
-    if (!parsed.push) {
-        process.stdout.write(`note: --no-push given, push later with: git push ${parsed.remote} ${branch} && git push ${parsed.remote} ${tag}\n`);
+    const bumpFrom = args.noBump ? null : primary;
+    const toWrite = bumpFrom !== null && bumpFrom !== target ? files.filter((f) => f.version === bumpFrom).map((f) => f.path) : [];
+    process.stdout.write(`\n${c.bold(`release ${previousTag ?? "(first)"} → ${tag}`)} on ${branch}\n` +
+        (toWrite.length ? `  bump  ${toWrite.join(", ")}\n` : "") +
+        `  tag   ${tag}${args.push ? `, push to ${args.remote}` : " (local only)"}${args.ghRelease ? ", GitHub Release" : ""}\n`);
+    if (args.dry) {
+        process.stdout.write(`${c.yellow("[DRY]")} nothing written\n`);
         return 0;
     }
-    if (!upstreamRef()) {
-        process.stderr.write(`${BIN_NAME} release: branch '${branch}' has no upstream — pushing tag to '${parsed.remote}' anyway\n`);
+    if ((mismatch || checks.warnings.length) && !args.yes && !(await confirmYesNo("Continue? [Y/n] "))) {
+        process.stdout.write("aborted\n");
+        return 1;
     }
-    // Push the bump commit before the tag so origin sees the commit the tag
-    // points to. Without this, a fresh clone may end up with a tag pointing to
-    // an unreachable commit (depending on the remote's tag-following config).
-    if (needsBump && upstreamRef()) {
-        const pushBranch = git(["push", parsed.remote, branch]);
+    if (toWrite.length && bumpFrom !== null) {
+        const res = writeVersions(root, files, bumpFrom, target);
+        const lock = syncCargoLock(root);
+        const add = git(["add", "--", ...res.changed, ...(lock ? ["Cargo.lock"] : [])], root);
+        if (!add.ok)
+            return fail(add.stderr || "failed to stage version files");
+        const commit = git(["commit", "-m", `release ${tag}`], root);
+        if (!commit.ok)
+            return fail(commit.stderr || "failed to commit version bump");
+        process.stdout.write(`${sym.ok} bumped ${res.changed.join(", ")} ${c.dim(`${bumpFrom} →`)} ${c.green(target)}\n`);
+    }
+    const tagRes = git(["tag", "-a", tag, "-m", args.message ?? tag]);
+    if (!tagRes.ok)
+        return fail(tagRes.stderr || `failed to create tag ${tag}`);
+    process.stdout.write(`${sym.ok} created annotated tag ${c.cyan(tag)} on ${branch}\n`);
+    if (!args.push) {
+        process.stdout.write(`note: --no-push given, push later with: git push ${args.remote} ${branch} && git push ${args.remote} ${tag}\n`);
+        return 0;
+    }
+    // Commit first, so the tag never points at a commit the remote lacks.
+    if (toWrite.length && upstreamRef()) {
+        const pushBranch = git(["push", args.remote, branch]);
         process.stdout.write(pushBranch.stdout);
         if (!pushBranch.ok) {
             process.stderr.write(pushBranch.stderr);
-            process.stderr.write(`\n${c.red(`${BIN_NAME} release: bump commit created locally but push to ${parsed.remote} failed`)}\n` +
-                `retry with: git push ${parsed.remote} ${branch} && git push ${parsed.remote} ${tag}\n`);
-            return pushBranch.status ?? 1;
+            return fail(`bump commit created locally but push failed\nretry with: git push ${args.remote} ${branch} && git push ${args.remote} ${tag}`);
         }
-        process.stdout.write(`${c.green("✓")} pushed ${c.cyan(branch)} to ${parsed.remote}\n`);
+        process.stdout.write(`${sym.ok} pushed ${c.cyan(branch)} to ${args.remote}\n`);
     }
-    const pushRes = git(["push", parsed.remote, tag]);
-    process.stdout.write(pushRes.stdout);
-    if (!pushRes.ok) {
-        process.stderr.write(pushRes.stderr);
-        process.stderr.write(`\n${c.red(`${BIN_NAME} release: tag created locally but push to ${parsed.remote} failed`)}\n` +
-            `retry with: git push ${parsed.remote} ${tag}\n` +
-            `or remove the local tag: git tag -d ${tag}\n`);
-        return pushRes.status ?? 1;
+    const pushTag = git(["push", args.remote, tag]);
+    process.stdout.write(pushTag.stdout);
+    if (!pushTag.ok) {
+        process.stderr.write(pushTag.stderr);
+        return fail(`tag created locally but push failed\nretry with: git push ${args.remote} ${tag}\nor remove the local tag: git tag -d ${tag}`);
     }
-    process.stdout.write(`${c.green("✓")} pushed ${c.cyan(tag)} to ${parsed.remote}\n`);
+    process.stdout.write(`${sym.ok} pushed ${c.cyan(tag)} to ${args.remote}\n`);
+    if (!args.ghRelease)
+        return 0;
+    const title = `${root.split(/[\\/]/).pop()} ${tag}`;
+    const code = await execInherit("gh", ["release", "create", tag, ...args.assets, "--title", title, "--generate-notes", ...(args.draft ? ["--draft"] : [])], { cwd: root });
+    if (code !== 0)
+        return fail(`gh release create failed (exit ${code}); tag ${tag} is already pushed`);
     return 0;
 }
 //# sourceMappingURL=release.js.map
