@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { git } from "../git/index.js";
 import { activeProviderName, getProvider, providerEnsureRunning, providerSmartGenerate } from "../provider/index.js";
 import { withSpinner } from "../spinner.js";
+import { c, sym } from "../ui.js";
 import { nextSemver } from "../version-bump.js";
 export function parseSemver(v) {
     const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v);
@@ -83,8 +84,10 @@ export function releaseSkill(root) {
         if (!/release/i.test(name))
             continue;
         const file = join(dir, name, "SKILL.md");
-        if (existsSync(file))
-            return readFileSync(file, "utf8").slice(0, SKILL_LIMIT);
+        if (!existsSync(file))
+            continue;
+        const full = readFileSync(file, "utf8");
+        return { path: `.claude/skills/${name}/SKILL.md`, text: full.slice(0, SKILL_LIMIT), truncated: full.length > SKILL_LIMIT };
     }
     return null;
 }
@@ -108,13 +111,20 @@ export async function llmReview(root, previousTag, proposed, skill) {
         `  - minor: new user-visible features, backward-compatible additions\n` +
         `  - major: breaking changes to public API/CLI/config or removed features\n` +
         `  - while the major version is 0: breaking changes and new features are minor; fixes are patch; major only declares 1.0\n` +
-        (skill ? `\nRepo release rules:\n${skill}\n` : "") +
+        (skill ? `\nRepo release rules:\n${skill.text}\n` : "") +
         `\nCommits since the last release:\n${log || "(none)"}\n\nDiff stat:\n${stat}\n\nDiff:\n${diff}\n\n` +
         `Reply with exactly two lines:\nLEVEL: patch|minor|major\nREASON: <one short sentence>\n`;
     try {
         if (!(await providerEnsureRunning().catch(() => false)))
             return null;
         const provider = getProvider();
+        if (skill) {
+            const note = skill.truncated ? c.dim(` (truncated to ${SKILL_LIMIT} chars)`) : "";
+            process.stdout.write(`${sym.info} release skill ${c.bold(skill.path)} read and passed to ${activeProviderName()} (${provider.activeModel()})${note}\n`);
+        }
+        else {
+            process.stdout.write(`${sym.bullet} ${c.dim("no release skill found (.claude/skills/*release*/SKILL.md) — using built-in semver rules only")}\n`);
+        }
         const raw = await withSpinner(`checking version plausibility via ${activeProviderName()} (${provider.activeModel()})`, () => providerSmartGenerate(prompt));
         const level = /LEVEL:\s*(patch|minor|major)/i.exec(raw)?.[1]?.toLowerCase();
         if (level !== "patch" && level !== "minor" && level !== "major")

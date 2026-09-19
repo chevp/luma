@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { git } from "../git/index.js";
 import { activeProviderName, getProvider, providerEnsureRunning, providerSmartGenerate } from "../provider/index.js";
 import { withSpinner } from "../spinner.js";
+import { c, sym } from "../ui.js";
 import { nextSemver, type BumpLevel } from "../version-bump.js";
 import type { VersionFile } from "./versions.js";
 
@@ -91,14 +92,23 @@ export function deterministicChecks(input: CheckInput): CheckResult {
 
 const SKILL_LIMIT = 4000;
 
+export interface ReleaseSkill {
+  /** Repo-relative path, forward slashes. */
+  path: string;
+  text: string;
+  truncated: boolean;
+}
+
 /** `.claude/skills/<*release*>/SKILL.md` of the repo, so the LLM judges by that repo's own rules. */
-export function releaseSkill(root: string): string | null {
+export function releaseSkill(root: string): ReleaseSkill | null {
   const dir = join(root, ".claude", "skills");
   if (!existsSync(dir)) return null;
   for (const name of readdirSync(dir)) {
     if (!/release/i.test(name)) continue;
     const file = join(dir, name, "SKILL.md");
-    if (existsSync(file)) return readFileSync(file, "utf8").slice(0, SKILL_LIMIT);
+    if (!existsSync(file)) continue;
+    const full = readFileSync(file, "utf8");
+    return { path: `.claude/skills/${name}/SKILL.md`, text: full.slice(0, SKILL_LIMIT), truncated: full.length > SKILL_LIMIT };
   }
   return null;
 }
@@ -113,7 +123,7 @@ function truncate(text: string, max: number): string {
 }
 
 /** Asks the active provider which bump the changes since the last tag warrant; null when unavailable. */
-export async function llmReview(root: string, previousTag: string | null, proposed: string | null, skill: string | null): Promise<LlmReview | null> {
+export async function llmReview(root: string, previousTag: string | null, proposed: string | null, skill: ReleaseSkill | null): Promise<LlmReview | null> {
   const range = previousTag ? [`${previousTag}..HEAD`] : [];
   const log = git(["log", "--pretty=format:%s", "-n", "60", ...range], root).stdout.trim();
   const stat = git(["diff", "--stat", ...(previousTag ? [previousTag, "HEAD"] : ["HEAD~1", "HEAD"])], root).stdout.trim();
@@ -130,13 +140,19 @@ export async function llmReview(root: string, previousTag: string | null, propos
     `  - minor: new user-visible features, backward-compatible additions\n` +
     `  - major: breaking changes to public API/CLI/config or removed features\n` +
     `  - while the major version is 0: breaking changes and new features are minor; fixes are patch; major only declares 1.0\n` +
-    (skill ? `\nRepo release rules:\n${skill}\n` : "") +
+    (skill ? `\nRepo release rules:\n${skill.text}\n` : "") +
     `\nCommits since the last release:\n${log || "(none)"}\n\nDiff stat:\n${stat}\n\nDiff:\n${diff}\n\n` +
     `Reply with exactly two lines:\nLEVEL: patch|minor|major\nREASON: <one short sentence>\n`;
 
   try {
     if (!(await providerEnsureRunning().catch(() => false))) return null;
     const provider = getProvider();
+    if (skill) {
+      const note = skill.truncated ? c.dim(` (truncated to ${SKILL_LIMIT} chars)`) : "";
+      process.stdout.write(`${sym.info} release skill ${c.bold(skill.path)} read and passed to ${activeProviderName()} (${provider.activeModel()})${note}\n`);
+    } else {
+      process.stdout.write(`${sym.bullet} ${c.dim("no release skill found (.claude/skills/*release*/SKILL.md) — using built-in semver rules only")}\n`);
+    }
     const raw = await withSpinner(`checking version plausibility via ${activeProviderName()} (${provider.activeModel()})`, () => providerSmartGenerate(prompt));
     const level = /LEVEL:\s*(patch|minor|major)/i.exec(raw)?.[1]?.toLowerCase();
     if (level !== "patch" && level !== "minor" && level !== "major") return null;

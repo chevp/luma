@@ -76,12 +76,15 @@ export function listVersionFiles(root: string): VersionFile[] {
   return out.sort((a, b) => rank(a) - rank(b) || a.path.split("/").length - b.path.split("/").length);
 }
 
-/** The version most files agree on; ties go to the earlier file in FILE_ORDER. */
+/** The version most of the shallowest files agree on, so nested example crates can't outvote the root; ties go to the earlier file in FILE_ORDER. */
 export function primaryVersion(files: VersionFile[]): string | null {
+  const depth = (f: VersionFile): number => f.path.split("/").length;
+  const shallowest = Math.min(...files.map(depth));
+  const top = files.filter((f) => depth(f) === shallowest);
   const counts = new Map<string, number>();
-  for (const f of files) counts.set(f.version, (counts.get(f.version) ?? 0) + 1);
+  for (const f of top) counts.set(f.version, (counts.get(f.version) ?? 0) + 1);
   let best: string | null = null;
-  for (const f of files) {
+  for (const f of top) {
     if (best === null || (counts.get(f.version) ?? 0) > (counts.get(best) ?? 0)) best = f.version;
   }
   return best;
